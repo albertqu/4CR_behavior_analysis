@@ -5,7 +5,7 @@ from numbers import Number
 import numpy as np
 import pandas as pd
 import sklearn
-from sklearn import cluster
+from sklearn import cluster, preprocessing
 from sklearn.manifold import Isomap
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.cluster import SpectralClustering
@@ -27,6 +27,7 @@ import plotly.express as px
 
 def load_session(root, opt='all'):
     file_map = {'MAS': "WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_081513.csv",
+                'MAS2': 'WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_051820.csv',
                 'FIP': "FIP Digging Summary Master File.csv"}
     if isinstance(opt, str):
         if opt == 'all':
@@ -61,6 +62,21 @@ def label_feature(pdf, criteria='num', verbose=False):
     return np.array(results)
 
 
+def dataset_split_feature_classes(pdf):
+    classes = {'other': []}
+    for c in pdf.columns:
+        if '.' in c:
+            cnames = c.split('.')
+            classe = ".".join(cnames[:-1])
+            if classe in classes:
+                classes[classe].append(c)
+            else:
+                classes[classe] = [c]
+        else:
+            classes['other'].append(c)
+    return {cl: pdf[classes[cl]] for cl in classes}
+
+
 def dataset_feature_cleaning(pdf, spec_map):
     # TODO: implement merger
     # TODO: maybe at some point drop rows instead of slicing them to rid the warnings?
@@ -71,17 +87,14 @@ def dataset_feature_cleaning(pdf, spec_map):
         if spec_map[s] == 'selD':
             # Select rows with nonnull values
             pdf = pdf.loc[~pdf[s].isnull()]
-            del spec_map[s]
         elif spec_map[s] == 'selF':
-            pdf.loc[pdf[s].isnull(), s] = -1
-            pdf[s] = pdf[s].astype(np.int)
-            del spec_map[s]
+            pdf[s].values[pdf[s].isnull()]= -1
+            # pdf[s] = pdf[s].astype(np.int)
         elif isinstance(spec_map[s], dict):
             # Select
             assert 'sel' in spec_map[s], print('Bad Usage of Dictionary Coding, no drop nor sel')
             sel_list = spec_map[s]['sel']
             pdf = pdf.loc[pdf[s].isin(sel_list)]
-            del spec_map[s]
     return pdf
 
 
@@ -114,7 +127,7 @@ def MAS_data_vectorizer(pdf, inputRange, NAN_policy='drop'):
         target = testweight.iloc[i]
         if ' at ' in str(target):
             dp = float(target.split(" ")[0])
-            pdf.loc[i, 'test.weight'] = dp
+            pdf['test.weight'].values[i] = dp
 
     if not isinstance(inputRange, list):
         inputRange = np.arange(inputRange)
@@ -186,9 +199,9 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
                     if len(g3) == 4:
                         g3 = g3[-2:]
                     datecode = int(f"{int(g3):02d}{int(m.group(1)):02d}{int(m.group(2)):02d}")
-                    pdf.loc[i, spe] = datecode
+                    pdf[spe].values[i] = datecode
                 else:
-                    pdf.loc[i, spe] = np.nan
+                    pdf[spe].values[i] = np.nan
 
         elif spe in spec_map:
             class_table['class'][class_table['feature'] == spe] = 0
@@ -212,7 +225,7 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
     # class 0, encode, use hot map
     ALPHAS_MAP = class_table['class'] == 0
     alpha_features = class_table['feature'][ALPHAS_MAP]
-    pdf_ENC = pdf[alpha_features].copy()
+    pdf_ENC = pdf.loc[:, alpha_features].copy(deep=True)
     for alp in alpha_features:
         if alp in spec_map:
             # spec_map features demand special encoding
@@ -225,14 +238,14 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
                 # Default binary coding
                 pdf[alp]=pdf[alp].astype('category')
                 pdf_ENC[alp] = pdf[alp]
-                pdf[alp] = pdf[alp].cat.codes.astype(np.float)
+                pdf.loc[:, alp] = pdf[alp].cat.codes.astype(np.float)
                 # TODO: clean the setter algorithms by converting everything to normal
-                pdf.loc[null_alp, alp] = np.nan
+                pdf[alp].values[null_alp] = np.nan
             else:
                 # ONE HOT ENCODING if more than 2 possible values
                 # NULL value be sure to mark back to null
                 pdf = pd.get_dummies(pdf, prefix_sep='__', columns=[alp], dtype=np.float)
-                pdf.loc[null_alp, [c for c in pdf.columns if c.startswith(alp+'__')]] = np.nan
+                pdf[[c for c in pdf.columns if c.startswith(alp+'__')]].values[null_alp] = np.nan
             # if NAN greater than 50%, apply NAN_policy first
 
     NUM_MAP = class_table['class'] == 1
@@ -297,6 +310,25 @@ def classify_features(pdf, out=None):
     return class_table
 
 
+def get_data_label(tPDF, tLabels, label=None, STRIFY=True):
+    # TODO: add merge label function if needed
+    if label is None:
+        allLabels = tLabels.columns
+        return set(np.concatenate([allLabels, [c for c in tPDF.columns if '__' not in c]]))
+    else:
+        targetDF = None
+        if label in tLabels.columns:
+            targetDF = tLabels
+        elif label in tPDF.columns:
+            targetDF = tPDF
+        else:
+            raise RuntimeError(f'Unknown Label: {label}!')
+        LDLabels = targetDF[label]
+        if STRIFY:
+            LDLabels = LDLabels.astype('str')
+        return LDLabels
+
+
 """ ##########################################
 ################ Visualization ###############
 ########################################## """
@@ -307,14 +339,23 @@ def visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=False
     ys = np.cumsum(pca_full.explained_variance_ratio_)
     titre = dataset_name+' PCA dimension plot'
     if JNOTEBOOK_MODE:
-        px.line(pd.DataFrame({'components': xs, 'variance ratio': ys}),
+        fig = px.line(pd.DataFrame({'components': xs, 'variance ratio': ys}),
                 x='components', y='variance ratio', title=titre)
+        fig.show()
     else:
         plt.plot(xs, ys, 'o-')
         plt.xlabel('# Components')
         plt.ylabel("cumulative % of variance")
         plt.title(titre)
         plt.show()
+
+
+def dataset_dimensionality_probing(X_nonan_dm, dataset_name, JNOTEBOOK_MODE=False):
+    # DIM Probing
+    pca_full = PCA().fit(X_nonan_dm) # N x D -> N x K * K x D
+    X_HD = X_nonan_dm @ (pca_full.components_.T)
+    visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    return pca_full
 
 
 def visualize_loading_weights(pca, keywords, nth_comp, show=True):
@@ -401,7 +442,8 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=Fa
     titre = f'{tag}_3D_{dims[0]}-{dims[1]}-{dims[2]}_vis'
     if JNOTEBOOK_MODE:
         fig = px.scatter_3d(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1], c2n: X_2D[:, 2],
-                                 labels.name: labels.values}), x=c0n, y=c1n, color=labels.name, title=titre)
+                                 labels.name: labels.values}), x=c0n, y=c1n, z=c2n,
+                            color=labels.name, title=titre)
         fig.show()
     else:
         raise NotImplementedError('3D is currently only supported in Jupiter Notebooks')
@@ -421,6 +463,15 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=Fa
         #     plt.savefig(fname+'.png')
         #     plt.savefig(fname+'.eps')
         #     plt.close()
+
+
+def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, JNOTEBOOK_MODE=False):
+    ND = min(list(models.values())[0][1].shape[1], ND)
+    vfunc = visualize_3D if ND == 3 else visualize_2D
+
+    for m in models:
+        model, X_LD = models[m]
+        vfunc(X_LD, labels, dims, m, show=show, out=out, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
 
 def feature_clustering_visualize(X, keywords, nclusters, show=True):
@@ -460,7 +511,87 @@ def save_isomap_2D(iso, X_iso, plots, clustering=None):
 """ ##########################################
 ################# Analysis ###################
 ########################################## """
+
+
+# Basic
+def feature_preprocess(tPDF, xPDF, method='skscale'):
+    # TODO: implement more detailed feature preprocessing based on feature relationships
+    # in fact tPDF does not need much unit variance scaling, but is implemented here for consistency
+    keywordsT, keywordsX = tPDF.columns, xPDF.columns
+    # Takes in demeaned data matrix (np.ndarray), and starts analysis, TODO: obtain X_cat_map, and X_cat labels
+    if method == 'skscale':
+        X_nonan_dm = preprocessing.scale(xPDF.values, axis=0)
+        T_nonan_dm = preprocessing.scale(tPDF.values, axis=0)
+    else:
+        X_nonan_dm = xPDF.sub(xPDF.mean()).values
+        T_nonan_dm = tPDF.sub(tPDF.mean()).values
+    return T_nonan_dm, keywordsT, X_nonan_dm, keywordsX
+
+
+def get_corr_matrix(T_nonan_dm, keywordsT, X_nonan_dm, keywordsX, dataset_name, dataOut,
+                    JNOTEBOOK_MODE=False):
+    if T_nonan_dm.shape[1] < X_nonan_dm.shape[1]:
+        fLen = X_nonan_dm.shape[1]
+        sLen = T_nonan_dm.shape[1]
+        fDM, sDM = X_nonan_dm, T_nonan_dm
+        fKWs, sKWs = keywordsX, keywordsT
+    else:
+        fLen = T_nonan_dm.shape[1]
+        sLen = X_nonan_dm.shape[1]
+        fDM, sDM = T_nonan_dm, X_nonan_dm
+        fKWs, sKWs = keywordsT, keywordsX
+    corrMat = np.zeros((fLen, sLen))
+    for i in range(fLen):
+        for j in range(sLen):
+            corrMat[i, j] = np.corrcoef(fDM[:, i], sDM[:, j])[0, 1]
+    plt.figure(figsize=(15, 15))
+    plt.imshow(corrMat ** 2)
+    plt.colorbar()
+    plt.yticks(np.arange(len(fKWs)), fKWs)
+    plt.xticks(np.arange(len(sKWs)), sKWs, rotation=90)
+    plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
+    plt.show()
+    corrPDF = pd.DataFrame(data=corrMat, index=fKWs, columns=sKWs)
+    if JNOTEBOOK_MODE:
+        corrPDF.head()
+    else:
+        corrPDF.to_csv(os.path.join(dataOut, dataset_name + 'corrMatrix.csv'), index=True)
+
+
 # Dim Reduction
+def dim_reduction(X_nonan_dm, ClusteringDim, models='all', kernelPCA_params=None):
+    """
+    Performs dim reduction on data
+    :param models: str or list-like
+    kernelPCA_params: tuple (dimMUL, kernel)
+        if kernelPCA is one of the models in `models`, kernelPCA_params must not be None
+    :return: dict {model: (fit_model, transformed_data)} or just one tuple
+    """
+    # TODO: determine whether to specify random states
+    DRs = {}
+    EXTRACT = False
+    if models=='all':
+        models = ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA']
+    elif isinstance(models, str):
+        models = [models]
+        EXTRACT = True
+    for m in models:
+        DRModel = None
+        if m == 'PCA':
+            DRModel = PCA(n_components=ClusteringDim)
+        elif m == 'ICA':
+            DRModel = FastICA(n_components=ClusteringDim)
+        elif m == 'ISOMAP':
+            DRModel = Isomap(n_components=ClusteringDim)
+        elif m == 'Kernel_PCA':
+            dimMUL, kernel = kernelPCA_params
+            DRModel = KernelPCA(n_components=ClusteringDim*dimMUL, kernel=kernel)
+        else:
+            raise NotImplementedError(f'model {m} not implemented')
+        DRs[m] = (DRModel, DRModel.fit_transform(X_nonan_dm))
+    if EXTRACT:
+        return list(DRs.values())[0]
+    return DRs
 
 
 # Regression
@@ -490,15 +621,20 @@ def main():
     # TODO: add 95.5 PC variance threshold
     # TODO: add function to handle merged datasets
     # paths
-    dataRoot = "/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/data"
-    dataset_name = 'FIP' # 'MAS'
     JNOTEBOOK_MODE = False
     CAT_ENCODE = None
     NAN_POLICY = 'drop'
+    if JNOTEBOOK_MODE:
+        ROOT = "/content/drive/My Drive/WilbrechtLab/adversity_4CR/"
 
+    else:
+        ROOT = "/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/"
+    dataRoot = os.path.join(ROOT, 'data')
+
+    dataset_name = 'MAS2' # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
-    plots = os.path.join("/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/plots/",
-                         dataset_name)
+    plots = os.path.join(ROOT, 'plots', dataset_name)
+
     if not os.path.exists(plots):
         os.makedirs(plots)
 
@@ -509,86 +645,45 @@ def main():
     # preprocessing
     RANGES = {'FIP': 14,  # Behavior only
               'MAS': list(range(6))+list(range(pdf.shape[1]-8, pdf.shape[1])),
+              'MAS2': list(range(8))+list(range(pdf.shape[1]-8, pdf.shape[1])),
               'all': 14} # fix for all
     vectorize_func = {
         'FIP': FIP_data_vectorizer,
-        'MAS': MAS_data_vectorizer
+        'MAS': MAS_data_vectorizer,
+        'MAS2': MAS_data_vectorizer
     }
 
+    # todo: set by slice problem did not show up with step by step run
     (tPDF, tLabels), (xPDF, xLabels) = vectorize_func[dataset_name](pdf, RANGES[dataset_name], NAN_POLICY)
     tLEN, xLEN = tPDF.shape[1], xPDF.shape[1]
-    keywordsT, keywordsX = tPDF.columns, xPDF.columns
-    # Takes in demeaned data matrix (np.ndarray), and starts analysis, TODO: obtain X_cat_map, and X_cat labels
-    X_nonan_dm = xPDF.sub(xPDF.mean()).values
-    T_nonan_dm = tPDF.sub(tPDF.mean()).values
+    T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
+    pca_full = dataset_dimensionality_probing(X_nonan_dm, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
-    # DIM Probing
-    pca_full = PCA().fit(X_nonan_dm) # N x D -> N x K * K x D
-    X_HD = X_nonan_dm @ (pca_full.components_.T)
-    visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-    ClusteringDim = 3 # Determine with the ratio plots MAS: 9
+    ClusteringDim = 3 # Determine with the ratio plots MAS: 9 TODO: IMPLEMENT CROSS-VALIDATION BASED SELECTION
     print(f"Capturing {100*np.sum(pca_full.explained_variance_ratio_[:ClusteringDim]):.4f}% variance")
 
     # Correlation Matrix
-    if T_nonan_dm.shape[1] < X_nonan_dm.shape[1]:
-        fLen = X_nonan_dm.shape[1]
-        sLen = T_nonan_dm.shape[1]
-        fDM, sDM = X_nonan_dm, T_nonan_dm
-        fKWs, sKWs = keywordsX, keywordsT
-    else:
-        fLen = T_nonan_dm.shape[1]
-        sLen = X_nonan_dm.shape[1]
-        fDM, sDM = T_nonan_dm, X_nonan_dm
-        fKWs, sKWs = keywordsT, keywordsX
-    corrMat = np.zeros((fLen, sLen))
-    for i in range(fLen):
-        for j in range(sLen):
-            corrMat[i, j] = np.corrcoef(fDM[:, i], sDM[:, j])[0, 1]
-    plt.figure(figsize=(15, 15))
-    plt.imshow(corrMat ** 2)
-    plt.colorbar()
-    plt.yticks(np.arange(len(fKWs)), fKWs)
-    plt.xticks(np.arange(len(sKWs)), sKWs, rotation=90)
-    plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
-    plt.show()
-    corrPDF = pd.DataFrame(data=corrMat, index=fKWs, columns=sKWs)
-    if JNOTEBOOK_MODE:
-        corrPDF.head()
-    else:
-        corrPDF.to_csv(os.path.join(dataOut, dataset_name+'corrMatrix.csv'), index=True)
+    get_corr_matrix(T_nonan_dm, keywordsT, X_nonan_dm, keywordsX, dataset_name,
+                    dataOut, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+
+    # DATA labeling
+    # MAS: ['Genotype', 'Treat']
+    # df['Name'] = df['First'].str.cat(df['Last'],sep=" ")
+    LABEL = 'Age At Test'  # 'exp1_label_FI_AL_M', 'exp2_Angel'
+    STRIFY = True
+    LDLabels=get_data_label(tPDF, tLabels, LABEL, STRIFY=STRIFY)
 
     # DIM Reduction
-    # MAS: ['Genotype', 'Treat']
-    LDLabels = tLabels['Treat']
-    #LDLabels = tLabels['Group'] # Experimental Cohort, FIP Duration, Behavior Duration, Group, Sex
-    #LDLabels = tLabels['Sex']
-    # PCA
-    # save_LD_plots(X_HD, LDLabels, 'PCA', plots, show=False)
-    visualize_2D(X_HD, LDLabels, 0, 'PCA', show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-    # ICA
-    fastICA = FastICA(n_components=ClusteringDim, random_state=0)
-    X_ICAHD = fastICA.fit_transform(X_nonan_dm)
-    # save_LD_plots(X_ICAHD, LDLabels, 'ICA', plots, show=False)
-    visualize_2D(X_ICAHD, LDLabels, 0, 'ICA', show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    models = dim_reduction(X_nonan_dm, ClusteringDim, kernelPCA_params=(2, 'poly'))
 
-    # ISOMAP
-    embedding = Isomap(n_components=ClusteringDim)
-    X_isomap = embedding.fit_transform(X_nonan_dm)
-    # save_LD_plots(X_isomap, LDLabels, 'ISOMAP', plots, show=False)
-    visualize_2D(X_isomap, LDLabels, 0, 'ISOMAP', show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-
-    # Kernel PCA
-    kernelPCA = KernelPCA(n_components=ClusteringDim*2, kernel='poly')
-    X_kernel = kernelPCA.fit_transform(X_nonan_dm)
-    #save_LD_plots(X_kernel, LDLabels, 'Kernel_PCA', plots, show=False)
-    visualize_2D(X_kernel, LDLabels, 0, 'Kernel_PCA', show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    visualize_LD_multimodels(models, LDLabels, 0, ND=3, show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # ------------------------------- LOOP -------------------------------
     for l in tLabels.columns:
         LDLabels = tLabels[l]
         # PCA
         save_loading_plots(pca_full, keywordsX, 'PCA', plots)
-        save_LD_plots(X_HD, LDLabels, 'PCA', plots, show=False)
+        save_LD_plots(models['PCA'], LDLabels, 'PCA', plots, show=False)
         # ICA
         fastICA = FastICA(n_components=ClusteringDim, random_state=0)
         X_ICAHD = fastICA.fit_transform(X_nonan_dm)
@@ -608,7 +703,7 @@ def main():
     # ------------------------------------------------------------------------
 
     # Clustering
-    X_LD = X_HD[:, :ClusteringDim]
+    X_LD = models['PCA'][:, :ClusteringDim]
     clustering = SpectralClustering(n_clusters=2,
                                     assign_labels="discretize",
                                     random_state=0).fit(X_LD)
