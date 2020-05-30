@@ -7,7 +7,9 @@ import pandas as pd
 import sklearn
 from sklearn import cluster, preprocessing
 from sklearn.manifold import Isomap
+from sklearn.metrics import confusion_matrix
 from sklearn.decomposition import PCA, FastICA, KernelPCA
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.cluster import SpectralClustering
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
@@ -17,6 +19,8 @@ from sklearn.svm import SVR
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
+
+RAND_STATE = 2020
 
 
 # PRINCIPLE: CODE: 0 INDEX, PLOTTING: 1 INDEX
@@ -28,6 +32,7 @@ import plotly.express as px
 def load_session(root, opt='all'):
     file_map = {'MAS': "WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_081513.csv",
                 'MAS2': 'WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_051820.csv',
+                '4CR': "4CR_Merge_052920.csv",
                 'FIP': "FIP Digging Summary Master File.csv"}
     if isinstance(opt, str):
         if opt == 'all':
@@ -131,10 +136,54 @@ def MAS_data_vectorizer(pdf, inputRange, NAN_policy='drop'):
 
     if not isinstance(inputRange, list):
         inputRange = np.arange(inputRange)
-    outputRange = np.setdiff1d(np.arange(pdf.shape[-1]), inputRange)
+    D = pdf.shape[-1]
+    for irg, rg in enumerate(inputRange):
+        if rg < 0:
+            inputRange[irg] = D+rg
+
+    outputRange = np.setdiff1d(np.arange(D), inputRange)
     pdf = dataset_feature_cleaning(pdf, spec_map)
     inPDF, outPDF = pdf.iloc[:, inputRange], pdf.iloc[:, outputRange]
     tPDF, tLabels, tFRows = default_vectorizer(inPDF, NAN_policy, spec_map, True)
+    xPDF, xLabels, xFRows = default_vectorizer(outPDF, NAN_policy, spec_map, True)
+    mRows = tFRows & xFRows
+    return (tPDF.loc[mRows], tLabels.loc[mRows]), (xPDF.loc[mRows], xLabels.loc[mRows])
+
+
+def FOURCR_data_vectorizer(pdf, inputRange, NAN_policy='drop'):
+    """
+
+    :param pdf:
+    :param inputRange: list (denoting the column indices) or int (first inputRange columns are inputs)
+    :param NAN_policy:
+    :return:
+    """
+    spec_map = {
+        'exp1_label_FI_AL_M': 'selF',
+        'exp2_Angel': 'selF',
+        'Treat': 'cat',
+        'Genotype': 'cat',
+        'Experimenter': 'cat'
+    }
+    # test.weight
+    testweight = pdf['test.weight']
+    for i in range(testweight.shape[0]):
+        target = testweight.iloc[i]
+        if ' at ' in str(target):
+            dp = float(target.split(" ")[0])
+            pdf['test.weight'].values[i] = dp
+
+    if not isinstance(inputRange, list):
+        inputRange = np.arange(inputRange)
+    D = pdf.shape[-1]
+    for irg, rg in enumerate(inputRange):
+        if rg < 0:
+            inputRange[irg] = D+rg
+
+    outputRange = np.setdiff1d(np.arange(D), inputRange)
+    pdf = dataset_feature_cleaning(pdf, spec_map)
+    inPDF, outPDF = pdf.iloc[:, inputRange], pdf.iloc[:, outputRange]
+    tPDF, tLabels, tFRows = default_vectorizer(inPDF, 'ignore', spec_map, True)
     xPDF, xLabels, xFRows = default_vectorizer(outPDF, NAN_policy, spec_map, True)
     mRows = tFRows & xFRows
     return (tPDF.loc[mRows], tLabels.loc[mRows]), (xPDF.loc[mRows], xLabels.loc[mRows])
@@ -254,7 +303,7 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
                                         np.concatenate((alpha_features, num_features))), inplace=True)
 
     pdf = pdf.astype(np.float)
-    # DISPOSE OF columns that have too many nans
+    # DISPOSE OF columns that have too many nans TODO: IMPLEMENT IGNORE POLICY OF NANS
     if NAN_policy == 'drop':
         THRES = 0.3
         dropped_cols = class_table['null_ratio'] >= THRES
@@ -269,6 +318,12 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
                 droppingFs = droppingFs + [c for c in pdf.columns if c.startswith(feat+'__')]
         pdf.drop(columns=droppingFs, inplace=True)
         nonullrows = ~pdf.isnull().any(axis=1)
+    elif NAN_policy == 'ignore':
+        pdf_ENC[pdf_ENC.isnull()] = np.nan
+        pdf[pdf.isnull()] = np.nan
+        nonullrows = np.full(pdf.shape[0], 1, dtype=bool)
+    else:
+        raise NotImplementedError(f'unknown policy {NAN_policy}')
     if finalROW:
         return pdf, pdf_ENC, nonullrows
     else:
@@ -350,12 +405,20 @@ def visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=False
         plt.show()
 
 
-def dataset_dimensionality_probing(X_nonan_dm, dataset_name, JNOTEBOOK_MODE=False):
+def dataset_dimensionality_probing(X_nonan_dm, dataset_name, visualize=True, verbose=True,
+                                   JNOTEBOOK_MODE=False):
     # DIM Probing
     pca_full = PCA().fit(X_nonan_dm) # N x D -> N x K * K x D
-    X_HD = X_nonan_dm @ (pca_full.components_.T)
-    visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-    return pca_full
+    if visualize:
+        visualize_dimensionality_ratios(pca_full, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    #automatic_dimension probing
+    # TODO: IMPLEMENT CROSS-VALIDATION BASED SELECTION
+    cumsum = np.cumsum(pca_full.explained_variance_ratio_)
+    ClusteringDim = np.where(cumsum >= 0.9)[0][0]+1 # Determine with the ratio plots MAS: 9
+    variance_ratio = np.sum(pca_full.explained_variance_ratio_[:ClusteringDim])
+    if verbose:
+        print(f"Capturing {100*variance_ratio:.4f}% variance with {ClusteringDim} components")
+    return pca_full, ClusteringDim
 
 
 def visualize_loading_weights(pca, keywords, nth_comp, show=True):
@@ -384,7 +447,7 @@ def save_loading_plots(decomp, keywords, model_name, plots):
         plt.close()
 
 
-def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=False):
+def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE
     """dims: 0 indexed"""
     # change clustering
@@ -396,14 +459,30 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=Fa
     c1n = f'Comp {dims[1]+1}'
     titre = f'{tag}_2D_{dims[0]}-{dims[1]}_vis'
     if JNOTEBOOK_MODE:
+        nlabels = len(labels.unique())
+        # TODO: blend in real labels of treatments
+        if labels.dtype == 'object':
+            cseq = sns.color_palette("coolwarm", nlabels).as_hex()
+            cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            if label_alias is not None:
+                newLabels = labels.copy(deep=True)
+                newCMAPs = {}
+                for l in labels.unique():
+                    al = label_alias[l]
+                    newLabels[labels == l] = al
+                    newCMAPs[al] = cmaps[l]
+                labels = newLabels
+                cmaps = newCMAPs
+        else:
+            cmaps = None
         fig = px.scatter(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1],
-                                 labels.name: labels.values}), x=c0n, y=c1n, color=labels.name, title=titre)
+                                 labels.name: labels.values}), x=c0n, y=c1n, color=labels.name,
+                                 color_discrete_map=cmaps, title=titre)
         fig.show()
     else:
         PALETTE = sns.color_palette("hls", len(nlabels))
         fig = plt.figure(figsize=(15, 15))
         for i, l in enumerate(nlabels):
-            print('label', l)
             plt.scatter(X_2D[labels == l, 0], X_2D[labels == l, 1], color=PALETTE[i], label=l)
         plt.legend()
         plt.title(f'{tag} 2D {dims} visualization')
@@ -427,11 +506,10 @@ def save_LD_plots(X_LD, labels, tag, out, show=True):
         visualize_2D(X_LD, labels, i, tag, show=show, out=outpath)
 
 
-def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=False):
+def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE
     """dims: 0 indexed"""
     # change clustering
-    nlabels = np.unique(labels)
     if not hasattr(dims, '__iter__'):
         dims = np.arange(dims, dims+3)
     assert X_HD.shape[1] >= 3, 'not enough dimensions try 2d instead'
@@ -440,10 +518,27 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=Fa
     c1n = f'Comp {dims[1]+1}'
     c2n = f'Comp {dims[2]+1}'
     titre = f'{tag}_3D_{dims[0]}-{dims[1]}-{dims[2]}_vis'
+
     if JNOTEBOOK_MODE:
+        nlabels = len(labels.unique())
+        # TODO: blend in real labels of treatments
+        if labels.dtype == 'object':
+            cseq = sns.color_palette("coolwarm", nlabels).as_hex()
+            cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            if label_alias is not None:
+                newLabels = labels.copy(deep=True)
+                newCMAPs = {}
+                for l in labels.unique():
+                    al = label_alias[l]
+                    newLabels[labels == l] = al
+                    newCMAPs[al] = cmaps[l]
+                labels = newLabels
+                cmaps = newCMAPs
+        else:
+            cmaps = None
         fig = px.scatter_3d(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1], c2n: X_2D[:, 2],
                                  labels.name: labels.values}), x=c0n, y=c1n, z=c2n,
-                            color=labels.name, title=titre)
+                            color=labels.name, color_discrete_map=cmaps, title=titre)
         fig.show()
     else:
         raise NotImplementedError('3D is currently only supported in Jupiter Notebooks')
@@ -465,13 +560,15 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, JNOTEBOOK_MODE=Fa
         #     plt.close()
 
 
-def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, JNOTEBOOK_MODE=False):
+def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, label_alias=None,
+                             JNOTEBOOK_MODE=False):
     ND = min(list(models.values())[0][1].shape[1], ND)
     vfunc = visualize_3D if ND == 3 else visualize_2D
 
     for m in models:
         model, X_LD = models[m]
-        vfunc(X_LD, labels, dims, m, show=show, out=out, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias,
+              JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
 
 def feature_clustering_visualize(X, keywords, nclusters, show=True):
@@ -567,20 +664,21 @@ def dim_reduction(X_nonan_dm, ClusteringDim, models='all', kernelPCA_params=None
         if kernelPCA is one of the models in `models`, kernelPCA_params must not be None
     :return: dict {model: (fit_model, transformed_data)} or just one tuple
     """
-    # TODO: determine whether to specify random states
+    # TODO: MDS, T-SNE
     DRs = {}
     EXTRACT = False
     if models=='all':
         models = ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA']
     elif isinstance(models, str):
         models = [models]
-        EXTRACT = True
+        EXTRACT = False
+    # Maybe Use tSNE
     for m in models:
         DRModel = None
         if m == 'PCA':
             DRModel = PCA(n_components=ClusteringDim)
         elif m == 'ICA':
-            DRModel = FastICA(n_components=ClusteringDim)
+            DRModel = FastICA(n_components=ClusteringDim, random_state=RAND_STATE)
         elif m == 'ISOMAP':
             DRModel = Isomap(n_components=ClusteringDim)
         elif m == 'Kernel_PCA':
@@ -594,7 +692,117 @@ def dim_reduction(X_nonan_dm, ClusteringDim, models='all', kernelPCA_params=None
     return DRs
 
 
+def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='pred', ignore_labels=None):
+    clfs = {}
+    confs = {}
+    if ignore_labels is None:
+        ignore_labels = []
+    uniqLabels = np.setdiff1d(labels.unique(), ignore_labels)
+    lxs = np.arange(len(uniqLabels))
+    NM = 1
+    scores = 0
+    # Plot a score find best score ?
+    for m in models:
+        model, X_LD = models[m]
+        if LD_dim is None:
+            LD_dim = X_LD.shape[-1]
+        X_LD = X_LD[:, :LD_dim]
+        # TODO: add stratified k fold later
+        confmats = np.zeros((len(uniqLabels), len(uniqLabels)))
+        neg_selectors = labels.isin(uniqLabels)
+        X_LDF, labelsF = X_LD[neg_selectors], labels[neg_selectors]
+        for i in range(N_iters):
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_LDF, labelsF, test_size=0.3, shuffle=True, stratify=labelsF)
+            # QDA
+            clf = QuadraticDiscriminantAnalysis()
+            clf.fit(X_train, y_train)
+            score = clf.score(X_test, y_test)
+            preds = clf.predict(X_test)
+            conf_mat = confusion_matrix(y_test, preds, labels=uniqLabels, normalize=mode)
+            confmats += conf_mat
+            scores += score
+        confs[m] = {'QDA': confmats / N_iters}
+        clfF = QuadraticDiscriminantAnalysis()
+        clfF.fit(X_LDF, labelsF)
+        clfs[m] = {'QDA': (clfF, scores / N_iters)} # get clf for all data
+    fig, axes = plt.subplots(nrows=NM, ncols=len(models), sharex=True, sharey=True)
+    # TODO: Handle multiple models
+    for i, m in enumerate(confs):
+        if NM * len(models) == 1:
+            ax = axes
+        else:
+            ax = axes[i]
+        ax.imshow(confs[m]['QDA'])
+        ax.set_title(m)
+        ax.set_xticks(lxs)
+        ax.set_xticklabels(uniqLabels)
+        ax.set_ylabel('truth')
+        ax.set_yticks(lxs)
+        ax.set_yticklabels(uniqLabels)
+        ax.set_ylabel('prediction')
+
+    return clfs, confs
+
+
+def clustering_LD_multimodels(models, labels, ClusteringDim=None, show=True, out=None):
+    # TODO: finish clutsering method
+    clusterings = {}
+    NClusters = len(labels.unique())
+
+    for m in models:
+        model, X_LD = models[m]
+        if ClusteringDim is None:
+            ClusteringDim = X_LD.shape[-1]
+        clustering[m] = {}
+        # Default: Spectral
+        X_LD = X_LD[:, :ClusteringDim]
+        clustering = SpectralClustering(n_clusters=NClusters,
+                                        assign_labels="discretize",
+                                        random_state=RAND_STATE).fit(X_LD)
+        clustering[m]['spectral'] = clustering
+
+
 # Regression
+def regression_with_norm_input(tPDF, xPDF, dataset_name, dataOut, method='linear', feature_importance=True):
+    # TODO: use grid search to build a great regression model
+    T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
+    X_train, X_test, y_train, y_test = train_test_split(
+        T_nonan_dm, X_nonan_dm, test_size=0.3) # TODO: do multiple iterations
+    if method == 'all':
+        method = ['linear', 'DT', 'SVR_poly', 'SVR_linear', 'SVR_rbf', 'SVR_sigmoid']
+    elif isinstance(method, str):
+        method = [method]
+
+    if feature_importance and ('DT' not in method):
+        method.append('DT')
+
+    for m in method:
+        if m == 'linear':
+            # Linear Regression
+            reg = LinearRegression().fit(X_train, y_train)
+            composite_linreg = reg.score(X_test, y_test)
+            train_accus, test_accus = test_model_efficacy(reg, X_train, y_train, X_test, y_test)
+            errPDF = pd.DataFrame({'train_accuracy': train_accus, 'test_accuracy': test_accus},
+                                  index=keywordsX)
+        elif m == 'DT':
+            # Decision Tree Regression
+            regressor = DecisionTreeRegressor(random_state=RAND_STATE)
+            regressor.fit(X_train, y_train)
+            composite_treereg = regressor.score(X_test, y_test)
+            plt.bar(np.arange(len(keywordsT)), regressor.feature_importances_)
+            plt.xticks(np.arange(len(keywordsT)), keywordsT, rotation=90)
+            plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
+            plt.show()
+            train_accu, test_accus = test_model_efficacy(regressor, X_train, y_train, X_test, y_test)
+            errPDF = pd.DataFrame({'train_accuracy': train_accus, 'test_accuracy': test_accus},
+                                  index=keywordsX)
+        elif re.search(r'SVR_(\w+)', m):
+            kernelType = m.split('_')[1] #['linear', 'poly', 'rbf', 'sigmoid']
+            clf = SVR(C=1, epsilon=0.5, kernel=kernelType)
+            train_errors, test_errors = test_model_efficacy(clf, X_train, y_train, X_test, y_test)
+            errPDF = pd.DataFrame({'train_err': train_errors, 'test_err': test_errors}, index=keywordsX)
+        errPDF.to_csv(os.path.join(dataOut, dataset_name + f'_{m}_regressor_err.csv'), index=True)
 
 
 # Model Testing
@@ -610,28 +818,60 @@ def test_model_efficacy(model, X_train, y_train, X_test, y_test):
 
 
 """ ##########################################
-#################### MAIN ####################
+########### DATA-SPECIFIC MODULE #############
 ########################################## """
 
 
-def main():
-    # TODO: use grid search to build a great regression model
-    # TODO: 3D visualization
-    # TODO: add a drop category for vectorizer such that certain features can be omitted
-    # TODO: add 95.5 PC variance threshold
-    # TODO: add function to handle merged datasets
-    # paths
-    JNOTEBOOK_MODE = False
-    CAT_ENCODE = None
-    NAN_POLICY = 'drop'
-    if JNOTEBOOK_MODE:
-        ROOT = "/content/drive/My Drive/WilbrechtLab/adversity_4CR/"
+def get_test_specific_options(test, BLIND=False):
+    # Color key Experiment 1: (Groups 5-8 are unusually flexible; group 1,6-8 are different strains than 2-5)
+    exp1 = {"-1.0": r"OTHERS",
+            "0.0": r'Controls',
+            "1.0": r"WT/SAL male P60-90 Bl/6J/CR",
+            "2.0": r"FI male P60 Taconic",
+            "3.0": r"FR male P60 Taconic",
+            "4.0": r"ALG male P60 Taconic",
+            "5.0": r"ALS male P60 Taconic",
+            "6.0": r"5d COC test at P90 Bl/6CR",
+            "7.0": r"BDNF met/met Ron tested at P60",
+            "8.0": r"P26 males WT Bl/6CR"}
+    # Color Key Experiment 2 data (focusing on angel's mice and bdnf/trkb manipulations) P40-60 ages
+    exp2 = {"-1.0": r'OTHERS',
+            "1.0": r"Controls VEH/SAL/WT",
+            "2.0": r"acute NMPP1pump",
+            "3.0": r"chronic NMPP1pump",
+            "4.0": r"BDNF Val/Val Ron",
+            "5.0": r"P1-23 NMPP1H20",
+            "6.0": r"P1-40 NMPP1H20",
+            "7.0": r"BDNF Met/Met Ron"}
 
-    else:
-        ROOT = "/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/"
-    dataRoot = os.path.join(ROOT, 'data')
+    TEST_LABEL_ALIAS = {
+        'exp1_label_FI_AL_M': None if BLIND else exp1,
+        'exp2_Angel': None if BLIND else exp2,
+        'age': None
+    }
 
-    dataset_name = 'MAS2' # 'MAS'
+    IGNORE_LABELS = {
+        'exp1_label_FI_AL_M': ['-1.0', '0.0'],
+        'exp2_Angel': ['-1.0', '1.0'],
+        'age': None
+    }
+    return TEST_LABEL_ALIAS[test], IGNORE_LABELS[test]
+
+
+def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', ND=3, LD_dim=3,
+                              NAN_POLICY='drop', BLIND=False, normalize_mode='true', JNOTEBOOK_MODE=True):
+    # TODO: GET RAW MODEL
+    """
+    :param ROOT:
+    :param dataRoot:
+    :param behavior:
+    :param dim_models: COULD BE 'all' or A SUBLIST OF ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA']
+    :param NAN_POLICY:
+    :param JNOTEBOOK_MODE:
+    :return:
+    """
+    # SPECIFICATION
+    dataset_name = '4CR'  # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
     plots = os.path.join(ROOT, 'plots', dataset_name)
 
@@ -644,23 +884,133 @@ def main():
 
     # preprocessing
     RANGES = {'FIP': 14,  # Behavior only
-              'MAS': list(range(6))+list(range(pdf.shape[1]-8, pdf.shape[1])),
-              'MAS2': list(range(8))+list(range(pdf.shape[1]-8, pdf.shape[1])),
-              'all': 14} # fix for all
+              'MAS': list(range(6)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
+              'MAS2': list(range(8)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
+              '4CR': 8}  # fix for all
     vectorize_func = {
         'FIP': FIP_data_vectorizer,
         'MAS': MAS_data_vectorizer,
-        'MAS2': MAS_data_vectorizer
+        'MAS2': MAS_data_vectorizer,
+        '4CR': FOURCR_data_vectorizer
+    }
+
+    test_label_alias, ignore_labels = get_test_specific_options(test, BLIND=BLIND)
+
+
+    # FEATURE CODING
+    # todo: set by slice problem did not show up with step by step run
+    (tPDF, tLabels), (xPDF, xLabels) = vectorize_func[dataset_name](pdf, RANGES[dataset_name], NAN_POLICY)
+    tLEN, xLEN = tPDF.shape[1], xPDF.shape[1]
+    T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
+
+    # DATA SELECTION
+    feature_classes_X = dataset_split_feature_classes(xPDF)
+    if behavior == 'SD':
+        SDX = feature_classes_X['SD']
+        _, _, SDX_nonan_dm, SDkeywordsX = feature_preprocess(tPDF, SDX)
+        BXpdf = SDX
+        BX_nonan_dm, BkeywordsX = SDX_nonan_dm, SDkeywordsX
+    elif behavior == 'REV':
+        REVX = feature_classes_X['REV']
+        _, _, REVX_nonan_dm, REVkeywordsX = feature_preprocess(tPDF, REVX)
+        BXpdf = REVX
+        BX_nonan_dm, BkeywordsX = REVX_nonan_dm, REVkeywordsX
+    else:
+        BXpdf = xPDF
+        BX_nonan_dm, BkeywordsX = X_nonan_dm, keywordsX
+
+    STRIFY = True
+    if test[:3] == 'exp':
+        LABEL = test  # 'exp1_label_FI_AL_M', 'exp2_Angel'
+          # Set this as true if we want the color of the points to be discrete (for discrete classes of vars)
+        LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=STRIFY)
+        BTpdf = tPDF
+    elif test == 'age':
+        exp1_labels = get_data_label(tPDF, tLabels, 'exp1_label_FI_AL_M', STRIFY=False)
+        angel_labels = get_data_label(tPDF, tLabels, 'exp2_Angel', STRIFY=False)
+        LABEL = 'Age At Test'
+        LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=False)
+        # FILTER OUT Treatment Groups
+        selectors = (angel_labels.astype(np.float) == -1) & (exp1_labels.astype(np.float) == -1)
+        BX_nonan_dm = BX_nonan_dm[selectors]
+        LDLabels = LDLabels[selectors]
+        BTpdf = tPDF[selectors]
+    else:
+        raise NotImplementedError(f'Unknown test: {test}')
+
+    # DIM Reduction
+    pca_full, ClusteringDim = dataset_dimensionality_probing(BX_nonan_dm, dataset_name,
+                                                             JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models,
+                                     kernelPCA_params=(2, 'poly'))
+    visualize_LD_multimodels(models_behaviors, LDLabels, 0, ND=ND, show=True,
+                             label_alias=test_label_alias, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+    # Quantify Difference
+    # Train Classifiers on X_LDs and quantify cross validation area
+    if test == 'age':
+        print("regression methods comes soon")
+    else:
+        clfs, confs = classifier_LD_multimodels(models_behaviors, LDLabels, LD_dim=LD_dim, mode=normalize_mode,
+                                                        ignore_labels=ignore_labels)
+
+    return models_behaviors, LDLabels, BXpdf, BTpdf # TODO: Returns tLabels also depending on utility
+
+
+
+""" ##########################################
+#################### MAIN ####################
+########################################## """
+
+
+def main():
+    # TODO: add function to handle merged datasets
+    # paths
+    JNOTEBOOK_MODE = False
+    CAT_ENCODE = None
+    NAN_POLICY = 'drop'
+    DIM_MODELS = ['ISOMAP']
+    TEST_OPTIONS = ['exp1_label_FI_AL_M', 'exp2_Angel', 'age']
+    BEHAVIOR_OPTS = ['both', 'SD', 'REV']
+    if JNOTEBOOK_MODE:
+        ROOT = "/content/drive/My Drive/WilbrechtLab/adversity_4CR/"
+    else:
+        ROOT = "/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/"
+    dataRoot = os.path.join(ROOT, 'data')
+
+    test_p, behavior_p, plot_dimension_p = 'exp2_Angel', 'both', 3
+    models_behaviors, LDLabels, BXpdf, BTpdf = behavior_analysis_pipeline(ROOT, dataRoot, test_p,
+                                                            behavior=behavior_p, dim_models=DIM_MODELS,
+                               ND=plot_dimension_p, LD_dim=3, NAN_POLICY=NAN_POLICY, JNOTEBOOK_MODE=True)
+
+    dataset_name = '4CR' # 'MAS'
+    dataOut = os.path.join(dataRoot, dataset_name)
+    plots = os.path.join(ROOT, 'plots', dataset_name)
+
+    if not os.path.exists(plots):
+        os.makedirs(plots)
+
+    if not os.path.exists(dataOut):
+        os.makedirs(dataOut)
+    pdf = load_session(dataRoot, dataset_name)
+
+    # preprocessing
+    RANGES = {'FIP': 14,  # Behavior only
+              'MAS': list(range(6)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
+              'MAS2': list(range(8)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
+              '4CR': 8}  # fix for all
+    vectorize_func = {
+        'FIP': FIP_data_vectorizer,
+        'MAS': MAS_data_vectorizer,
+        'MAS2': MAS_data_vectorizer,
+        '4CR': FOURCR_data_vectorizer
     }
 
     # todo: set by slice problem did not show up with step by step run
     (tPDF, tLabels), (xPDF, xLabels) = vectorize_func[dataset_name](pdf, RANGES[dataset_name], NAN_POLICY)
     tLEN, xLEN = tPDF.shape[1], xPDF.shape[1]
     T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
-    pca_full = dataset_dimensionality_probing(X_nonan_dm, dataset_name, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-
-    ClusteringDim = 3 # Determine with the ratio plots MAS: 9 TODO: IMPLEMENT CROSS-VALIDATION BASED SELECTION
-    print(f"Capturing {100*np.sum(pca_full.explained_variance_ratio_[:ClusteringDim]):.4f}% variance")
+    pca_full, ClusteringDim = dataset_dimensionality_probing(X_nonan_dm, dataset_name,
+                                                             JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # Correlation Matrix
     get_corr_matrix(T_nonan_dm, keywordsT, X_nonan_dm, keywordsX, dataset_name,
@@ -675,17 +1025,18 @@ def main():
 
     # DIM Reduction
     models = dim_reduction(X_nonan_dm, ClusteringDim, kernelPCA_params=(2, 'poly'))
-
     visualize_LD_multimodels(models, LDLabels, 0, ND=3, show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # ------------------------------- LOOP -------------------------------
+    # TODO: fix loading methods
     for l in tLabels.columns:
         LDLabels = tLabels[l]
         # PCA
-        save_loading_plots(pca_full, keywordsX, 'PCA', plots)
-        save_LD_plots(models['PCA'], LDLabels, 'PCA', plots, show=False)
+        save_loading_plots(models['PCA'][0], keywordsX, 'PCA', plots)
+        save_LD_plots(models['PCA'][1], LDLabels, 'PCA', plots, show=False)
+
         # ICA
-        fastICA = FastICA(n_components=ClusteringDim, random_state=0)
+        fastICA = FastICA(n_components=ClusteringDim, random_state=RAND_STATE)
         X_ICAHD = fastICA.fit_transform(X_nonan_dm)
         save_loading_plots(fastICA, keywordsX, 'ICA', plots)
         save_LD_plots(X_ICAHD, LDLabels, 'ICA', plots, show=False)
@@ -702,38 +1053,7 @@ def main():
 
     # ------------------------------------------------------------------------
 
-    # Clustering
-    X_LD = models['PCA'][:, :ClusteringDim]
-    clustering = SpectralClustering(n_clusters=2,
-                                    assign_labels="discretize",
-                                    random_state=0).fit(X_LD)
 
-    # Regression
-    X_train, X_test, y_train, y_test = train_test_split(
-        T_nonan_dm, X_nonan_dm, test_size=0.3, random_state=0)
-    # Linear Regression
-    reg = LinearRegression().fit(X_train, y_train)
-    composite_linreg = reg.score(X_test, y_test)
-    train_accus, test_accus = test_model_efficacy(reg, X_train, y_train, X_test, y_test)
-    errPDF = pd.DataFrame({'train_accuracy': train_accus, 'test_accuracy': test_accus}, index=keywordsX)
-    errPDF.to_csv(os.path.join(dataOut, dataset_name + '_linreg_err.csv'), index=True)
-
-    # Decision Tree Regression
-    regressor = DecisionTreeRegressor(random_state=0)
-    regressor.fit(X_train, y_train)
-    composite_treereg = regressor.score(X_test, y_test)
-    plt.bar(np.arange(len(keywordsT)), regressor.feature_importances_)
-    plt.xticks(np.arange(len(keywordsT)), keywordsT, rotation=90)
-    plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
-    plt.show()
-    train_accu, test_accus = test_model_efficacy(regressor, X_train, y_train, X_test, y_test)
-    errPDF = pd.DataFrame({'train_accuracy': train_accus, 'test_accuracy': test_accus}, index=keywordsX)
-    errPDF.to_csv(os.path.join(dataOut, dataset_name + '_DT_regressor_err.csv'), index=True)
-
-    kernelType = 'poly' #['linear', 'poly', 'rbf', 'sigmoid']
-    clf = SVR(C=1, epsilon=0.5, kernel=kernelType)
-    train_errors, test_errors = test_model_efficacy(clf, X_train, y_train, X_test, y_test)
-    errPDF = pd.DataFrame({'train_err': train_errors, 'test_err': test_errors}, index=keywordsX)
 
 
 
