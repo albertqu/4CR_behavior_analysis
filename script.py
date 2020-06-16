@@ -6,15 +6,19 @@ import numpy as np
 import pandas as pd
 import sklearn
 from sklearn import cluster, preprocessing
-from sklearn.manifold import Isomap
+from sklearn.manifold import Isomap, MDS, TSNE
 from sklearn.metrics import confusion_matrix
+from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.cluster import SpectralClustering
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
-from sklearn.svm import SVR
+from sklearn.svm import SVR, SVC
+from umap.umap_ import UMAP
+from xgboost import XGBClassifier
 # plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -33,7 +37,8 @@ def load_session(root, opt='all'):
     file_map = {'MAS': "WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_081513.csv",
                 'MAS2': 'WilbrechtLab_4ChoiceRevDataALL_MASTERFILE_051820.csv',
                 '4CR': "4CR_Merge_052920.csv",
-                'FIP': "FIP Digging Summary Master File.csv"}
+                'FIP': "FIP Digging Summary Master File.csv",
+                'FIP_RL': "FIP_RL_061120.csv"}
     if isinstance(opt, str):
         if opt == 'all':
             opts = file_map.keys()
@@ -200,12 +205,13 @@ def FIP_data_vectorizer(pdf, inputRange, NAN_policy='drop'):
         'Experimental Cohort': 'cat',
         'FIP Duration': 'cat',
         'Behavior Duration': 'cat',
+        'exp_treat_sex': 'cat'
     }
     if not isinstance(inputRange, list):
         inputRange = np.arange(inputRange)
     outputRange = np.setdiff1d(np.arange(pdf.shape[-1]), inputRange)
     inPDF, outPDF = pdf.iloc[:, inputRange], pdf.iloc[:, outputRange]
-    tPDF, tLabels, tFRows = default_vectorizer(inPDF, NAN_policy, spec_map, True)
+    tPDF, tLabels, tFRows = default_vectorizer(inPDF, 'ignore', spec_map, True)
     xPDF, xLabels, xFRows = default_vectorizer(outPDF, NAN_policy, spec_map, True)
     mRows = tFRows & xFRows
     return (tPDF.loc[mRows], tLabels.loc[mRows]), (xPDF.loc[mRows], xLabels.loc[mRows])
@@ -319,8 +325,8 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
         pdf.drop(columns=droppingFs, inplace=True)
         nonullrows = ~pdf.isnull().any(axis=1)
     elif NAN_policy == 'ignore':
-        pdf_ENC[pdf_ENC.isnull()] = np.nan
-        pdf[pdf.isnull()] = np.nan
+        pdf_ENC.values[pdf_ENC.isnull()] = np.nan
+        pdf.values[pdf.isnull()] = np.nan
         nonullrows = np.full(pdf.shape[0], 1, dtype=bool)
     else:
         raise NotImplementedError(f'unknown policy {NAN_policy}')
@@ -367,6 +373,7 @@ def classify_features(pdf, out=None):
 
 def get_data_label(tPDF, tLabels, label=None, STRIFY=True):
     # TODO: add merge label function if needed
+    # Guarantee tLabels to be series
     if label is None:
         allLabels = tLabels.columns
         return set(np.concatenate([allLabels, [c for c in tPDF.columns if '__' not in c]]))
@@ -478,7 +485,8 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         fig = px.scatter(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1],
                                  labels.name: labels.values}), x=c0n, y=c1n, color=labels.name,
                                  color_discrete_map=cmaps, title=titre)
-        fig.show()
+        if show:
+            fig.show()
     else:
         PALETTE = sns.color_palette("hls", len(nlabels))
         fig = plt.figure(figsize=(15, 15))
@@ -507,7 +515,7 @@ def save_LD_plots(X_LD, labels, tag, out, show=True):
 
 
 def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, JNOTEBOOK_MODE=False):
-    # TODO: implement saving for JNOTEBOOK_MODE
+    # TODO: implement saving for JNOTEBOOK_MODE  ADD DATASET NAME MAYBE?
     """dims: 0 indexed"""
     # change clustering
     if not hasattr(dims, '__iter__'):
@@ -539,7 +547,8 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         fig = px.scatter_3d(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1], c2n: X_2D[:, 2],
                                  labels.name: labels.values}), x=c0n, y=c1n, z=c2n,
                             color=labels.name, color_discrete_map=cmaps, title=titre)
-        fig.show()
+        if show:
+            fig.show()
     else:
         raise NotImplementedError('3D is currently only supported in Jupiter Notebooks')
         # PALETTE = sns.color_palette("hls", len(nlabels))
@@ -560,15 +569,97 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         #     plt.close()
 
 
+def visualize_3d_multiple_surface():
+    import plotly.graph_objects as go
+    for m in umap_accus:
+        if len(umap_accus[m].shape) == 1:
+            umap_accus[m] = umap_accus[m].reshape(umap_xs.shape)
+    fig = go.Figure(
+        data=[go.Surface(x=umap_min_dists_seqs, y=umap_neighbor_seqs, z=umap_accus[m], showscale=False) for m
+              in umap_accus])
+    fig.update_layout({'title': 'UMAP', 'xaxis_title': 'min_dist', 'yaxis_title': 'neighbor'})
+    fig.show()
+
+
 def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, label_alias=None,
                              JNOTEBOOK_MODE=False):
-    ND = min(list(models.values())[0][1].shape[1], ND)
-    vfunc = visualize_3D if ND == 3 else visualize_2D
 
     for m in models:
         model, X_LD = models[m]
+        vfunc = visualize_3D if min(X_LD.shape[1], ND) == 3 else visualize_2D
         vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias,
               JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+
+
+def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, cluster_param=3, label_alias=None,
+                          confusion_mode=None):
+    """
+    cite: https://www.kaggle.com/grfiv4/plot-a-confusion-matrix
+    :param mats:
+    :param uniqLabels:
+    :param affinity:
+    :param tag:
+    :param cluster_param:
+    :param confusion_mode: None if for other connectivity matrices, for confusion matrices: raw, normalize
+    by true, pred, or total
+    :return:
+    """
+    # HANDLE dissimality more graceful
+    NM = len(list(mats.values())[0])
+    lxs = np.arange(len(uniqLabels))
+    # visualize confusing matrix, dissimilarity matrices and connectivity matrices
+    fig, axes = plt.subplots(nrows=NM, ncols=len(mats), sharex=True, sharey=True,
+                             figsize=(len(mats) * 7, NM * 5))
+    for k, m in enumerate(mats):
+        for l, met in enumerate(mats[m]):
+            if NM * len(mats) == 1:
+                ax = axes
+            elif NM == 1:
+                ax = axes[k]
+            else:
+                ax = axes[l][k]
+            # modify linkage
+            # TODO: modify method to accommodate 2D rows
+            mat2vis = mats[m][met]
+            if confusion_mode is not None:
+                if confusion_mode == 'true':
+                    mat2vis = mat2vis / np.sum(mat2vis, keepdims=True, axis=1)
+                elif confusion_mode == 'pred':
+                    mat2vis = mat2vis / np.sum(mat2vis, keepdims=True, axis=0)
+                elif confusion_mode == 'all':
+                    mat2vis = mat2vis / np.sum(mat2vis)
+            hsort_mat, hsort_labels, hsort = conn_matrix_hierarchical_sort(mat2vis, uniqLabels,
+                                                                           affinity=affinity,
+                                                                           cluster_param=cluster_param)
+            if label_alias is not None:
+                hsort_labels = [label_alias[hl] for hl in hsort_labels]
+            clabels, ccounts = np.unique(hsort.labels_, return_counts=True)
+            cluster_edges = np.cumsum(ccounts) - 0.5
+            if affinity == 'precomputed':
+                hsort_mat = 1 / (hsort_mat + 1e-12)
+            if confusion_mode is not None:
+                # For confusion matrix, visualize accuracy
+                thresh = hsort_mat.max() / 1.5 if confusion_mode != 'raw' else hsort_mat.max() / 2
+                for i in range(hsort_mat.shape[0]):
+                    for j in range(hsort_mat.shape[1]):
+                        if confusion_mode != 'raw':
+                            fm = "{:0.2f}"
+                        else:
+                            fm = "{:,}"
+                        ax.text(j, i, fm.format(hsort_mat[i, j]),
+                                 horizontalalignment="center",
+                                 color="white" if hsort_mat[i, j] > thresh else "black")
+            pmp = ax.imshow(hsort_mat, cmap=plt.cm.get_cmap('Blues'))
+            ax.hlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
+            ax.vlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
+            ax.set_title(m + f"_{tag}" if tag is not None else "")
+            ax.set_xticks(lxs)
+            ax.set_xticklabels(hsort_labels, rotation=45, horizontalalignment="right")
+            ax.set_ylabel('truth')
+            ax.set_yticks(lxs)
+            ax.set_yticklabels(hsort_labels)
+            ax.set_ylabel(f'{met} prediction')
+            plt.colorbar(pmp, ax=ax)
 
 
 def feature_clustering_visualize(X, keywords, nclusters, show=True):
@@ -656,7 +747,7 @@ def get_corr_matrix(T_nonan_dm, keywordsT, X_nonan_dm, keywordsX, dataset_name, 
 
 
 # Dim Reduction
-def dim_reduction(X_nonan_dm, ClusteringDim, models='all', kernelPCA_params=None):
+def dim_reduction(X_nonan_dm, ClusteringDim, models='all', params=None):
     """
     Performs dim reduction on data
     :param models: str or list-like
@@ -667,39 +758,81 @@ def dim_reduction(X_nonan_dm, ClusteringDim, models='all', kernelPCA_params=None
     # TODO: MDS, T-SNE
     DRs = {}
     EXTRACT = False
-    if models=='all':
-        models = ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA']
-    elif isinstance(models, str):
-        models = [models]
-        EXTRACT = False
-    # Maybe Use tSNE
-    for m in models:
-        DRModel = None
-        if m == 'PCA':
-            DRModel = PCA(n_components=ClusteringDim)
-        elif m == 'ICA':
-            DRModel = FastICA(n_components=ClusteringDim, random_state=RAND_STATE)
-        elif m == 'ISOMAP':
-            DRModel = Isomap(n_components=ClusteringDim)
-        elif m == 'Kernel_PCA':
-            dimMUL, kernel = kernelPCA_params
-            DRModel = KernelPCA(n_components=ClusteringDim*dimMUL, kernel=kernel)
-        else:
-            raise NotImplementedError(f'model {m} not implemented')
-        DRs[m] = (DRModel, DRModel.fit_transform(X_nonan_dm))
+    if X_nonan_dm.shape[1] <= 3:
+        DRs = {'raw': (None, X_nonan_dm)}
+    else:
+        if models=='all':
+            models = ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA', 'MDS', 'NMDS', 'UMAP', 'tSNE']
+        elif isinstance(models, str):
+            models = [models]
+            EXTRACT = False
+        if params is None:
+            params = {}
+        # Maybe Use tSNE
+        for m in models:
+            DRModel = None
+            if m == 'PCA':
+                DRModel = PCA(n_components=ClusteringDim)
+            elif m == 'ICA':
+                DRModel = FastICA(n_components=ClusteringDim, random_state=RAND_STATE)
+            elif m == 'ISOMAP':
+                DRModel = Isomap(n_components=ClusteringDim)
+            elif m == 'Kernel_PCA':
+                if m in params:
+                    dimMUL, kernel = params['Kernel_PCA']
+                else:
+                    dimMUL, kernel = 2, 'poly'
+                DRModel = KernelPCA(n_components=ClusteringDim*dimMUL, kernel=kernel)
+            elif m == 'MDS':
+                if 'MDS' in params:
+                    eps = params['MDS']
+                else:
+                    eps = 1e-9
+                DRModel = MDS(n_components=ClusteringDim, max_iter=3000, eps=eps,
+                          random_state=RAND_STATE, dissimilarity="euclidean")
+            elif m == 'NMDS':
+                if 'NMDS' in params:
+                    eps = params['NMDS']
+                else:
+                    eps = 1e-12
+                DRModel = MDS(n_components=ClusteringDim, metric=False, max_iter=3000, eps=eps,
+                           dissimilarity="euclidean", random_state=RAND_STATE)
+            elif m == 'UMAP':
+                defaults = {'n_neighbors': 30, 'min_dist': 0.2, # 'n_neighbors': 10, 'min_dist': 0.8,
+                            # TODO: formal testing
+                            'n_components': 3, 'metric': 'euclidean'}
+                if 'UMAP' in params:
+                    defaults.update(params['UMAP'])
+                DRModel = UMAP(**defaults)
+            elif m == 'tSNE':
+                defaults = {'perplexity': 30, 'init': 'pca',
+                            'n_components': 2}
+                if 'tSNE' in params:
+                    defaults.update(params['tSNE'])
+                DRModel = TSNE(**defaults)
+            else:
+                raise NotImplementedError(f'model {m} not implemented')
+            DRs[m] = (DRModel, DRModel.fit_transform(X_nonan_dm))
     if EXTRACT:
         return list(DRs.values())[0]
     return DRs
 
 
-def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='pred', ignore_labels=None):
+def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='true',
+                              ignore_labels=None, clf_models='all', clf_params=None,
+                              cluster_param=3, label_alias=None, show=True):
+    # default return raw confusion matrix and visualize normalized by true labels
+    if clf_models == 'all':
+        clf_models = ['QDA', 'SVC', 'RandomForests', 'XGBoost'] # XGBoost
+    elif isinstance(clf_models, str):
+        clf_models = [clf_models]
+    if clf_params is None:
+        clf_params = {}
     clfs = {}
     confs = {}
     if ignore_labels is None:
         ignore_labels = []
     uniqLabels = np.setdiff1d(labels.unique(), ignore_labels)
-    lxs = np.arange(len(uniqLabels))
-    NM = 1
     scores = 0
     # Plot a score find best score ?
     for m in models:
@@ -711,38 +844,136 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='pr
         confmats = np.zeros((len(uniqLabels), len(uniqLabels)))
         neg_selectors = labels.isin(uniqLabels)
         X_LDF, labelsF = X_LD[neg_selectors], labels[neg_selectors]
-        for i in range(N_iters):
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_LDF, labelsF, test_size=0.3, shuffle=True, stratify=labelsF)
-            # QDA
-            clf = QuadraticDiscriminantAnalysis()
-            clf.fit(X_train, y_train)
-            score = clf.score(X_test, y_test)
-            preds = clf.predict(X_test)
-            conf_mat = confusion_matrix(y_test, preds, labels=uniqLabels, normalize=mode)
-            confmats += conf_mat
-            scores += score
-        confs[m] = {'QDA': confmats / N_iters}
-        clfF = QuadraticDiscriminantAnalysis()
-        clfF.fit(X_LDF, labelsF)
-        clfs[m] = {'QDA': (clfF, scores / N_iters)} # get clf for all data
-    fig, axes = plt.subplots(nrows=NM, ncols=len(models), sharex=True, sharey=True)
-    # TODO: Handle multiple models
-    for i, m in enumerate(confs):
-        if NM * len(models) == 1:
-            ax = axes
-        else:
-            ax = axes[i]
-        ax.imshow(confs[m]['QDA'])
-        ax.set_title(m)
-        ax.set_xticks(lxs)
-        ax.set_xticklabels(uniqLabels)
-        ax.set_ylabel('truth')
-        ax.set_yticks(lxs)
-        ax.set_yticklabels(uniqLabels)
-        ax.set_ylabel('prediction')
+        # TODO: Generalize to models other than QDA
+        confs[m] = {}
+        clfs[m] = {}
+        for cm in clf_models:
+            if cm == 'QDA':
+                clfF = QuadraticDiscriminantAnalysis()
+            elif cm == 'SVC':
+                defaults = {"gamma": 2, "C": 1}
+                if 'SVC' in clf_params:
+                    defaults.update(clf_params['SVC'])
+                clfF = SVC(kernel='rbf', **defaults)
+                # TODO default SVC rbf
+            elif cm == 'RandomForests':
+                defaults = {"n_estimators": 50, "n_jobs": 4}
+                if 'RandomForests' in clf_params:
+                    defaults.update(clf_params['RandomForests'])
+                clfF = RandomForestClassifier(**defaults)
+            elif cm == 'XGBoost':
+                defaults = {"learning_rate": 0.3, "gamma": 0, "reg_lambda": 1, # minimum loss reduction
+                            "min_child_weight": 1, # larger, less likely to overfit, more conservative
+                            "max_depth": 6, "n_jobs": 4}
+                if 'XGBoost' in clf_params:
+                    defaults.update(clf_params['XGBoost'])
+                clfF = XGBClassifier(**defaults)
+            else:
+                raise NotImplementedError(f"Unknown Classifier {cm}")
 
+            for i in range(N_iters):  # TODO: replace with shuffle splits
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_LDF, labelsF, test_size=0.3, shuffle=True, stratify=labelsF)
+                # QDA
+                clfF.fit(X_train, y_train)
+                score = clfF.score(X_test, y_test)
+                preds = clfF.predict(X_test)
+                conf_mat = confusion_matrix(y_test, preds, labels=uniqLabels)
+                confmats += conf_mat
+                scores += score
+            confs[m][cm] = confmats / N_iters
+            clfF.fit(X_LDF, labelsF)
+            clfs[m][cm] = (clfF, scores / N_iters) # get clf for all data
+    # TODO: Handle multiple models
+    if show:
+        visualize_conn_matrix(confs, uniqLabels, tag=f"normalize_{mode}", cluster_param=cluster_param,
+                              confusion_mode=mode, label_alias=label_alias)
+    # TODO: return the labels
     return clfs, confs
+
+
+def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method='silhouette', metric='euclidean',
+                                   cluster_param=3, label_alias=None, show=True):
+    mats = {}
+    uniqLabels = labels.unique()
+    # Plot a score find best score ?
+    for m in models:
+        if m == 'tSNE':
+            continue
+        model, X_LD = models[m]
+        if LD_dim is None:
+            LD_dim = X_LD.shape[-1]
+        else:
+            LD_dim = min(LD_dim, X_LD.shape[-1])
+        X_LD = X_LD[:, :LD_dim]
+        # TODO: fix unique labels
+        mat, ulabels = calculate_class_dissimilarity(X_LD, labels=labels, categories=uniqLabels,
+                                                     method=method, metric=metric)
+        # Get similarity as inverse of dissimilarity
+        mats[m] = {method: mat}
+    # TODO: Handle multiple models
+    if len(mats) != 0:
+        # TODO: more robust handling of TSNE
+        if show:
+            visualize_conn_matrix(mats, uniqLabels, affinity='precomputed', tag=f"{method}_{metric}",
+                                  cluster_param=cluster_param, label_alias=label_alias)
+    return mats
+
+
+def calculate_class_dissimilarity(X, Y=None, labels=None, intraDistPair=None, categories=None,
+                                  method='silhouette', metric='euclidean'):
+    # TODO handle singletons
+    if labels is not None:
+        if not isinstance(labels, np.ndarray):
+            labels = np.array(labels)
+        if categories is not None:
+            uniq_labels = categories
+        else:
+            uniq_labels = np.unique(labels)
+        N = uniq_labels.shape[0]
+        dissim = np.empty((N, N), dtype=np.float)
+        groups = [X[labels==iul, :] for iul in uniq_labels]
+        if method == 'silhouette':
+            intraDists = [np.sum(np.triu(
+                pairwise_distances(
+                    iX, metric=metric), 1)) * 2 / (iX.shape[0] ** 2 - iX.shape[0]) for iX in groups]
+        else:
+            intraDists = [None] * N
+        for i, iX in enumerate(groups):
+            for j, jY in enumerate(groups):
+                dissim[i, j] = calculate_class_dissimilarity(iX, Y=jY,
+                                                             intraDistPair=(intraDists[i], intraDists[j]),
+                                                             method=method, metric=metric)
+        return dissim, uniq_labels
+    elif Y is not None:
+        dist_XY = pairwise_distances(X, Y, metric=metric)
+        if method == 'average':
+            return np.mean(dist_XY)
+        elif method == 'max':
+            return np.max(dist_XY)
+        elif method == 'min':
+            return np.min(dist_XY)
+        elif method == 'silhouette':
+            distX, distY = intraDistPair
+            dia = np.sum(np.diag(dist_XY))
+            if dia == 0.:
+                amean = (np.sum(dist_XY) - np.sum(dia)) / (dist_XY.shape[0] ** 2 - dist_XY.shape[0])
+                return amean / (distX + distY)
+            else:
+                return np.mean(dist_XY) / (distX + distY)
+        elif method == 'avgmin':
+            # TODO: normalized version
+            x_y = np.min(dist_XY, axis=1)
+            y_x = np.min(dist_XY, axis=0)
+            return np.mean(np.concatenate((x_y, y_x)))
+        else:
+            raise NotImplementedError(f'Unknown Dissimilarity Method {method}')
+        # average linkage
+        # max linkage
+        # min
+        # Silhouette dij / (sig_i + sig_j)
+    else:
+        raise RuntimeError('At least one of Y and lables must be not None')
 
 
 def clustering_LD_multimodels(models, labels, ClusteringDim=None, show=True, out=None):
@@ -763,7 +994,102 @@ def clustering_LD_multimodels(models, labels, ClusteringDim=None, show=True, out
         clustering[m]['spectral'] = clustering
 
 
+def conn_matrix_hierarchical_sort(mat, labels, affinity='euclidean', method='ward', cluster_param=3):
+    # TODO: fine tune sorting method number of clusters
+    if affinity != 'euclidean' and method == 'ward':
+        method = 'single'
+    if isinstance(cluster_param, int):
+        aggs = cluster.AgglomerativeClustering(n_clusters=cluster_param, affinity=affinity,
+                                               linkage=method).fit(mat)
+    else:
+        aggs = cluster.AgglomerativeClustering(n_clusters=None, affinity=affinity, linkage=method,
+                                               distance_threshold=cluster_param).fit(mat)
+    neworder = np.argsort(aggs.labels_)
+    mat_sorted = mat[:, neworder][neworder, :]
+    return mat_sorted, labels[neworder], aggs
+
+
 # Regression
+def regression_multi_models(models, Y, method='linear', N_iters=100, raw_features_names=None,
+                            feature_importance=True, confidence_level=0.95, show=True):
+    # implement feature importance
+    # dataset_name, dataOut
+    # TODO: different dim models for regression
+    if len(Y.shape) == 1:
+        Y = pd.DataFrame({Y.name: Y})
+    if 'raw' in models:
+        assert raw_features_names is not None
+    # TODO: implement method supporting multidim Y
+
+    if method == 'all':
+        method = ['linear', 'DT', 'SVR_poly', 'SVR_linear', 'SVR_rbf', 'SVR_sigmoid']
+    elif isinstance(method, str):
+        method = [method]
+
+    if feature_importance and ('DT' not in method):
+        method.append('DT')
+
+    reg_results = {}
+    y_inds = Y.columns
+    y_inds_double = np.tile(y_inds, 2)
+    reg_pdf = {'model': [], 'method': [], 'score_type': [], 'label': [], 'accuracy': []}
+    D_feats = len(y_inds)
+
+    for k in models:
+        reg_results[k] = {}
+        for m in method:
+            model, X_LD = models[k]
+            total_train_accus, total_test_accus = 0., 0.
+            for _ in range(N_iters):
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_LD, Y.values, test_size=0.3)  # TODO: do multiple iterations
+                if m == 'linear':
+                    # Linear Regression
+                    reg = LinearRegression().fit(X_train, y_train)
+                elif m == 'DT':
+                    # Decision Tree Regression
+                    reg = DecisionTreeRegressor(random_state=RAND_STATE).fit(X_train, y_train)
+                # TODO: ADD adaboost regressor
+                elif re.search(r'SVR_(\w+)', m):
+                    kernelType = m.split('_')[1] #['linear', 'poly', 'rbf', 'sigmoid']
+                    reg = SVR(C=1, epsilon=0.5, kernel=kernelType).fit(X_train, y_train)
+                else:
+                    raise NotImplementedError(f"Unknown Regression Method {m}")
+                composite_reg = reg.score(X_test, y_test)
+                train_accus, test_accus = test_model_efficacy(reg, X_train, y_train, X_test, y_test)
+                total_train_accus += train_accus
+                total_test_accus += test_accus
+            total_test_accus /= N_iters
+            total_train_accus /= N_iters
+            reg_results[k][m] = {'train_accuracy': total_train_accus,
+                                 'test_accuracy': total_test_accus}
+            reg_pdf['model'].append([k] * 2 * D_feats)
+            reg_pdf['method'].append([m] * 2 * D_feats)
+            reg_pdf['score_type'].append(['train'] * D_feats + ['test'] * D_feats)
+            reg_pdf['accuracy'].append(np.concatenate((total_train_accus, total_test_accus)))
+            reg_pdf['label'].append(y_inds_double)
+    for rp in reg_pdf:
+        reg_pdf[rp] = np.concatenate(reg_pdf[rp])
+        print(rp, reg_pdf[rp].shape)
+
+    if show:
+        # fig, axes = plt.subplots(nrows=len(method), ncols=len(models), sharey=True, sharex=True)
+        # for i, met in enumerate(method):
+        #     for j, mod in enumerate(models):
+
+        fig = px.bar(reg_pdf, x="label", y="accuracy", color="score_type", barmode="group",
+                     facet_row="method", facet_col="model")
+        fig.show()
+    return reg_results
+
+
+def visualize_feature_importance():
+    plt.bar(np.arange(len(keywordsT)), regressor.feature_importances_)
+    plt.xticks(np.arange(len(keywordsT)), keywordsT, rotation=90)
+    plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
+    plt.show()
+
+
 def regression_with_norm_input(tPDF, xPDF, dataset_name, dataOut, method='linear', feature_importance=True):
     # TODO: use grid search to build a great regression model
     T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
@@ -817,12 +1143,129 @@ def test_model_efficacy(model, X_train, y_train, X_test, y_test):
     return train_accus, test_accus
 
 
+def adjusted_BAC_confusion_matrix(conf):
+    norm_conf = np.diag(conf) / np.sum(conf, axis=1)
+    rlevel = 1 / conf.shape[0]
+    return np.mean(norm_conf) - rlevel / (rlevel)
+
+
+def class_wise_F_measure(conf):
+    tps = np.diag(conf)
+    prec = tps / np.sum(conf, axis=0)
+    recall = tps / np.sum(conf, axis=1)
+    return 2 * prec * recall / (prec + recall)
+
+
+# Model Selection
+def get_accu(models_behaviors, LDLabels, test_p, CLUSTER_PARAM=4, LDDIM=3):
+    _, ignores = get_test_specific_options(test_p, BLIND=False)
+    clfs, confs = classifier_LD_multimodels(models_behaviors, LDLabels, LD_dim=LDDIM, mode='true',
+                                            ignore_labels=ignores, cluster_param=CLUSTER_PARAM,
+                                            show=False)  # ['1.0', '0.0', '-1.0']
+    k = diff_evaluation_LD_multimodels(models_behaviors, LDLabels, cluster_param=CLUSTER_PARAM, show=False)
+    accu_dict = {}
+    for m in confs:
+        accus = np.diag(confs[m]['QDA'])
+        accu_dict[m] = {'avg': np.mean(accus),
+                        'max': np.max(accus),
+                        'top_half': np.mean(accus[accus > np.percentile(accus, 50)])}
+
+    return accu_dict
+
+
+def extract_pdf(accus, xs, xtag, ys=None, ytag=None):
+    if ys is not None:
+        ys = np.ravel(ys, order='C')
+        xs = np.ravel(xs, order='C')
+        for m in accus:
+            accus[m] = np.ravel(accus[m], order='C')
+        all_ys = []
+    labels = []
+    all_accus = []
+    all_xs = []
+    for m in accus:
+        labels.append(np.full(len(xs), m))
+        all_accus.append(accus[m])
+        all_xs.append(xs)
+        if ys is not None:
+            all_ys.append(ys)
+    labels = np.concatenate(labels)
+    all_accus = np.concatenate(all_accus)
+    all_xs = np.concatenate(all_xs)
+    if ys is not None:
+        pdf = pd.DataFrame({xtag: all_xs, ytag: np.concatenate(all_ys), 'TPs': all_accus, 'measure': labels})
+    else:
+        pdf = pd.DataFrame({xtag: all_xs, 'TPs': all_accus, 'measure': labels})
+    return pdf
+
+
+def run_procedures():
+    # TOP half
+    # maximum
+    # average
+    CLUSTER_PARAM = 4
+    LDDIM = 3
+    umap_neighbor_seqs = np.array([10 * i for i in range(1, 9)])
+    umap_min_dists_seqs = np.array([0.1 * i for i in range(1, 9)])
+    tSNE_perplexity = np.array([10 * i for i in range(1, 9)])
+    umap_accus = {m: np.zeros((len(umap_neighbor_seqs), len(umap_min_dists_seqs))) for m in
+                  ['avg', 'max', 'top_half']}
+    umap_xs, umap_ys = np.meshgrid(umap_neighbor_seqs, umap_min_dists_seqs)
+    tSNE_accus = {m: np.zeros(len(tSNE_perplexity)) for m in ['avg', 'max', 'top_half']}
+    for ij, jseq in enumerate(umap_neighbor_seqs):
+        DIM_PARAMS_tSNE = {'tSNE': {'perplexity': 40, 'init': 'pca',
+                                    'n_components': 2}}
+        models_behaviors, LDLabels, BXpdf, BTpdf = behavior_analysis_pipeline(ROOT,
+                                                                              dataRoot, test_p,
+                                                                              behavior=behavior_p,
+                                                                              dim_models=['tSNE'],
+                                                                              ND=plot_dimension_p,
+                                                                              NAN_POLICY=NAN_POLICY,
+                                                                              BLIND=False,
+                                                                              dim_params=DIM_PARAMS,
+                                                                              cluster_param=CLUSTER_PARAM,
+                                                                              show=False,
+                                                                              JNOTEBOOK_MODE=True)
+        accu_dict_tSNE = \
+        get_accu(models_behaviors, LDLabels, test_p, CLUSTER_PARAM=CLUSTER_PARAM, LDDIM=LDDIM)['tSNE']
+        for m in tSNE_accus:
+            tSNE_accus[m][ij] = accu_dict_tSNE[m]
+        for ik, kseq in enumerate(umap_min_dists_seqs):
+            DIM_PARAMS = {'UMAP': {'n_neighbors': jseq, 'min_dist': kseq,
+                                   'n_components': 3, 'metric': 'euclidean'}}
+            models_behaviors, LDLabels, BXpdf, BTpdf = behavior_analysis_pipeline(ROOT,
+                                                                                  dataRoot, test_p,
+                                                                                  behavior=behavior_p,
+                                                                                  dim_models=['UMAP'],
+                                                                                  ND=plot_dimension_p,
+                                                                                  NAN_POLICY=NAN_POLICY,
+                                                                                  BLIND=False,
+                                                                                  dim_params=DIM_PARAMS,
+                                                                                  cluster_param=CLUSTER_PARAM,
+                                                                                  show=False,
+                                                                                  JNOTEBOOK_MODE=True)
+            accu_dict_UMAP = \
+            get_accu(models_behaviors, LDLabels, test_p, CLUSTER_PARAM=CLUSTER_PARAM, LDDIM=LDDIM)['UMAP']
+            for m in umap_accus:
+                umap_accus[m][ij][ik] = accu_dict_UMAP[m]
+
+    px.line_3d(pd.DataFrame(extract_pdf(umap_accus, umap_xs, 'umap_neighbor', umap_ys, 'umap_min_dist')),
+               x='umap_neighbor', y='umap_min_dist', z='TPs', color='measure', title='UMAP')
+    px.line(pd.DataFrame(extract_pdf(tSNE_accus, tSNE_perplexity, 'tSNE_perplexity')), x='tSNE_perplexity',
+            y='TPs', color='measure', title='tSNE')
+    accuv = umap_accus['avg']
+    xmax, ymax = np.where(accuv == np.max(accuv))
+    print(umap_neighbor_seqs[xmax], umap_min_dists_seqs[ymax])
+    print(np.max(accuv), accuv[xmax, ymax])
+
+
 """ ##########################################
 ########### DATA-SPECIFIC MODULE #############
 ########################################## """
 
 
 def get_test_specific_options(test, BLIND=False):
+    # Need to change when the total test options changed
     # Color key Experiment 1: (Groups 5-8 are unusually flexible; group 1,6-8 are different strains than 2-5)
     exp1 = {"-1.0": r"OTHERS",
             "0.0": r'Controls',
@@ -844,22 +1287,48 @@ def get_test_specific_options(test, BLIND=False):
             "6.0": r"P1-40 NMPP1H20",
             "7.0": r"BDNF Met/Met Ron"}
 
+    exp1_params = {'UMAP': {'n_neighbors': 10,
+                              'min_dist': 0.8,
+                              'n_components': 3,
+                              'metric': 'euclidean'}}
+    exp2_params = {}
+
     TEST_LABEL_ALIAS = {
         'exp1_label_FI_AL_M': None if BLIND else exp1,
         'exp2_Angel': None if BLIND else exp2,
-        'age': None
+        'age': None,
+        'RL_age': None,
+        'RL_treat_sex': None,
+        'RL_treat': None,
+        'RL_sex': None
     }
 
     IGNORE_LABELS = {
         'exp1_label_FI_AL_M': ['-1.0', '0.0'],
         'exp2_Angel': ['-1.0', '1.0'],
-        'age': None
+        'age': None,
+        'RL_age': None,
+        'RL_treat_sex': None,
+        'RL_treat': None,
+        'RL_sex': None
     }
-    return TEST_LABEL_ALIAS[test], IGNORE_LABELS[test]
+
+    DIM_PARAMS = {
+        'exp1_label_FI_AL_M': exp1_params,
+        'exp2_Angel': exp2_params,
+        'age': {},
+        'RL_age': {},
+        'RL_treat_sex': {},
+        'RL_treat': {},
+        'RL_sex': {}
+    }
+    return TEST_LABEL_ALIAS[test], IGNORE_LABELS[test], DIM_PARAMS[test]
 
 
-def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', ND=3, LD_dim=3,
-                              NAN_POLICY='drop', BLIND=False, normalize_mode='true', JNOTEBOOK_MODE=True):
+def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', reg_models='linear',
+                               clf_models='all', reg_feature_models=None, ND=3, LD_dim=3, NAN_POLICY='drop',
+                               BLIND=False, normalize_mode='true', dim_params=None, clf_params=None,
+                               cluster_param=3, show=True, JNOTEBOOK_MODE=True):
     # TODO: GET RAW MODEL
     """
     :param ROOT:
@@ -871,7 +1340,10 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     :return:
     """
     # SPECIFICATION
-    dataset_name = '4CR'  # 'MAS'
+    if test.startswith('RL'):
+        dataset_name = 'FIP_RL'
+    else:
+        dataset_name = '4CR'  # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
     plots = os.path.join(ROOT, 'plots', dataset_name)
 
@@ -886,16 +1358,19 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     RANGES = {'FIP': 14,  # Behavior only
               'MAS': list(range(6)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
               'MAS2': list(range(8)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
+              'FIP_RL': 15,
               '4CR': 8}  # fix for all
     vectorize_func = {
         'FIP': FIP_data_vectorizer,
+        'FIP_RL': FIP_data_vectorizer,
         'MAS': MAS_data_vectorizer,
         'MAS2': MAS_data_vectorizer,
         '4CR': FOURCR_data_vectorizer
     }
 
-    test_label_alias, ignore_labels = get_test_specific_options(test, BLIND=BLIND)
-
+    test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND)
+    if dim_params is None:
+        dim_params = dim_default_params
 
     # FEATURE CODING
     # todo: set by slice problem did not show up with step by step run
@@ -935,26 +1410,50 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         BX_nonan_dm = BX_nonan_dm[selectors]
         LDLabels = LDLabels[selectors]
         BTpdf = tPDF[selectors]
+    elif test.startswith('RL'):
+        tag = test[3:]
+        if tag == 'age':
+            LABEL = f"Age At Test"
+            LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=False)
+        else:
+            label_map = {'treat_sex': f"exp_{tag}", 'treat': 'Treat', 'sex': 'Sex'}
+            LABEL = label_map[tag]
+            LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=STRIFY)
+        BTpdf = tPDF
     else:
         raise NotImplementedError(f'Unknown test: {test}')
 
     # DIM Reduction
-    pca_full, ClusteringDim = dataset_dimensionality_probing(BX_nonan_dm, dataset_name,
+    pca_full, ClusteringDim = dataset_dimensionality_probing(BX_nonan_dm, dataset_name, visualize=show,
                                                              JNOTEBOOK_MODE=JNOTEBOOK_MODE)
-    models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models,
-                                     kernelPCA_params=(2, 'poly'))
-    visualize_LD_multimodels(models_behaviors, LDLabels, 0, ND=ND, show=True,
+    models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models, params=dim_params)
+    visualize_LD_multimodels(models_behaviors, LDLabels, 0, ND=ND, show=show,
                              label_alias=test_label_alias, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+
     # Quantify Difference
     # Train Classifiers on X_LDs and quantify cross validation area
-    if test == 'age':
-        print("regression methods comes soon")
+    if 'age' in test:
+        if reg_feature_models is None:
+            reg_FModels =  ['ISOMAP', 'PCA']
+        else:
+            reg_FModels = reg_feature_models
+        models4regression = {m: models_behaviors[m] for m in reg_FModels}
+        if 'raw' not in models_behaviors:
+            models4regression.update({'raw': (None, BX_nonan_dm)})
+        LDLabels = LDLabels.astype(np.float)
+        reg_results = regression_multi_models(models4regression, LDLabels, method=reg_models, N_iters=100,
+                                              raw_features_names=BkeywordsX,
+                                    feature_importance=True, confidence_level=0.95, show=True)
     else:
-        clfs, confs = classifier_LD_multimodels(models_behaviors, LDLabels, LD_dim=LD_dim, mode=normalize_mode,
-                                                        ignore_labels=ignore_labels)
+        clfs, confs = classifier_LD_multimodels(models_behaviors, LDLabels, LD_dim=LD_dim,
+                                                mode=normalize_mode, ignore_labels=ignore_labels,
+                                                clf_models=clf_models, clf_params=clf_params,
+                                                cluster_param=cluster_param, label_alias=test_label_alias,
+                                                show=show)
+        dissim_mats = diff_evaluation_LD_multimodels(models_behaviors, LDLabels, cluster_param=cluster_param,
+                                       label_alias=test_label_alias, show=show)
 
     return models_behaviors, LDLabels, BXpdf, BTpdf # TODO: Returns tLabels also depending on utility
-
 
 
 """ ##########################################
@@ -968,8 +1467,10 @@ def main():
     JNOTEBOOK_MODE = False
     CAT_ENCODE = None
     NAN_POLICY = 'drop'
-    DIM_MODELS = ['ISOMAP']
-    TEST_OPTIONS = ['exp1_label_FI_AL_M', 'exp2_Angel', 'age']
+    DIM_MODELS = ['PCA', 'ISOMAP', 'UMAP', 'tSNE']
+    CLF_MODELS = ['QDA', 'SVC', 'RandomForests', 'XGBoost']
+    REG_MODELS = ['linear']
+    TEST_OPTIONS = ['exp1_label_FI_AL_M', 'exp2_Angel', 'age', 'RL_treat_sex', 'RL_treat', 'RL_sex', 'RL_age']
     BEHAVIOR_OPTS = ['both', 'SD', 'REV']
     if JNOTEBOOK_MODE:
         ROOT = "/content/drive/My Drive/WilbrechtLab/adversity_4CR/"
@@ -978,9 +1479,19 @@ def main():
     dataRoot = os.path.join(ROOT, 'data')
 
     test_p, behavior_p, plot_dimension_p = 'exp2_Angel', 'both', 3
+    dim_params = {'UMAP': {'n_neighbors': 10,
+                              'min_dist': 0.8,
+                              'n_components': 3,
+                              'metric': 'euclidean'}},
     models_behaviors, LDLabels, BXpdf, BTpdf = behavior_analysis_pipeline(ROOT, dataRoot, test_p,
-                                                            behavior=behavior_p, dim_models=DIM_MODELS,
-                               ND=plot_dimension_p, LD_dim=3, NAN_POLICY=NAN_POLICY, JNOTEBOOK_MODE=True)
+                                                                          behavior=behavior_p,
+                                                                          dim_models=DIM_MODELS,
+                                                                          reg_models=REG_MODELS,
+                                                                          clf_models=CLF_MODELS,
+                                                                          reg_feature_models=None,
+                                                                          ND=plot_dimension_p, LD_dim=3,
+                                                                          NAN_POLICY=NAN_POLICY, BLIND=False,
+                                                                          JNOTEBOOK_MODE=True)
 
     dataset_name = '4CR' # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
@@ -1024,7 +1535,7 @@ def main():
     LDLabels=get_data_label(tPDF, tLabels, LABEL, STRIFY=STRIFY)
 
     # DIM Reduction
-    models = dim_reduction(X_nonan_dm, ClusteringDim, kernelPCA_params=(2, 'poly'))
+    models = dim_reduction(X_nonan_dm, ClusteringDim, params={'Kernel_PCA': (2, 'poly')})
     visualize_LD_multimodels(models, LDLabels, 0, ND=3, show=True, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # ------------------------------- LOOP -------------------------------
