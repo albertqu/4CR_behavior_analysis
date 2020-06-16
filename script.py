@@ -637,7 +637,9 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
             cluster_edges = np.cumsum(ccounts) - 0.5
             if affinity == 'precomputed':
                 hsort_mat = 1 / (hsort_mat + 1e-12)
+                fig.suptitle("Similarity Matrix Across classes")
             if confusion_mode is not None:
+                fig.suptitle("Confusion Matrix For Classifiers")
                 # For confusion matrix, visualize accuracy
                 thresh = hsort_mat.max() / 1.5 if confusion_mode != 'raw' else hsort_mat.max() / 2
                 for i in range(hsort_mat.shape[0]):
@@ -649,6 +651,8 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
                         ax.text(j, i, fm.format(hsort_mat[i, j]),
                                  horizontalalignment="center",
                                  color="white" if hsort_mat[i, j] > thresh else "black")
+            else:
+                fig.suptitle("Raw Data Matrix Sorted With Dissimilarity")
             pmp = ax.imshow(hsort_mat, cmap=plt.cm.get_cmap('Blues'))
             ax.hlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
             ax.vlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
@@ -660,6 +664,42 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
             ax.set_yticklabels(hsort_labels)
             ax.set_ylabel(f'{met} prediction')
             plt.colorbar(pmp, ax=ax)
+
+
+def visualize_F_measure_multi_clf(mats, uniqLabels, label_alias=None):
+    """
+    cite: https://www.kaggle.com/grfiv4/plot-a-confusion-matrix
+    :param mats:
+    :param uniqLabels:
+    :param affinity:
+    :param tag:
+    :param cluster_param:
+    :param confusion_mode: None if for other connectivity matrices, for confusion matrices: raw, normalize
+    by true, pred, or total
+    :return:
+    """
+    # HANDLE dissimality more graceful
+    NM = len(list(mats.values())[0])
+    # visualize confusing matrix, dissimilarity matrices and connectivity matrices
+    all_fmeas = []
+    if label_alias is not None:
+        label_show = [label_alias[hl] for hl in uniqLabels]
+    else:
+        label_show = uniqLabels
+    all_labels = np.tile(label_show, NM * len(mats))
+    all_dims = []
+    all_clfs = []
+    for m in mats:
+        all_dims.append((len(uniqLabels) * len(mats[m])) * [m])
+        for met in mats[m]:
+            all_clfs.append(len(uniqLabels) * [met])
+            f_meas = class_wise_F_measure(mats[m][met])
+            all_fmeas.append(f_meas)
+    F_pdf = pd.DataFrame({'DimReduction': np.concatenate(all_dims), 'Classifier': np.concatenate(all_clfs),
+                          'Group': all_labels, 'F-measure': np.concatenate(all_fmeas)})
+    fig = px.bar(F_pdf, x="Group", y="F-measure", facet_row="Classifier", facet_col="DimReduction",
+                 title=f"Class-wise F-measure For Classification (Chance: {1 / len(uniqLabels)})")
+    fig.show()
 
 
 def feature_clustering_visualize(X, keywords, nclusters, show=True):
@@ -888,6 +928,7 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
     if show:
         visualize_conn_matrix(confs, uniqLabels, tag=f"normalize_{mode}", cluster_param=cluster_param,
                               confusion_mode=mode, label_alias=label_alias)
+        visualize_F_measure_multi_clf(confs, uniqLabels, label_alias=label_alias)
     # TODO: return the labels
     return clfs, confs
 
@@ -1146,7 +1187,7 @@ def test_model_efficacy(model, X_train, y_train, X_test, y_test):
 def adjusted_BAC_confusion_matrix(conf):
     norm_conf = np.diag(conf) / np.sum(conf, axis=1)
     rlevel = 1 / conf.shape[0]
-    return np.mean(norm_conf) - rlevel / (rlevel)
+    return (np.mean(norm_conf) - rlevel) / (1 - rlevel)
 
 
 def class_wise_F_measure(conf):
@@ -1467,8 +1508,9 @@ def main():
     JNOTEBOOK_MODE = False
     CAT_ENCODE = None
     NAN_POLICY = 'drop'
+    CLUSTER_PARAM = 4
     DIM_MODELS = ['PCA', 'ISOMAP', 'UMAP', 'tSNE']
-    CLF_MODELS = ['QDA', 'SVC', 'RandomForests', 'XGBoost']
+    CLF_MODELS = ['QDA'] #, 'SVC', 'RandomForests', 'XGBoost']
     REG_MODELS = ['linear']
     TEST_OPTIONS = ['exp1_label_FI_AL_M', 'exp2_Angel', 'age', 'RL_treat_sex', 'RL_treat', 'RL_sex', 'RL_age']
     BEHAVIOR_OPTS = ['both', 'SD', 'REV']
@@ -1491,6 +1533,7 @@ def main():
                                                                           reg_feature_models=None,
                                                                           ND=plot_dimension_p, LD_dim=3,
                                                                           NAN_POLICY=NAN_POLICY, BLIND=False,
+                                                                          cluster_param=CLUSTER_PARAM,
                                                                           JNOTEBOOK_MODE=True)
 
     dataset_name = '4CR' # 'MAS'
