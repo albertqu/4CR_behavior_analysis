@@ -1052,6 +1052,7 @@ def conn_matrix_hierarchical_sort(mat, labels, affinity='euclidean', method='war
     return mat_sorted, labels[neworder], aggs
 
 
+
 # Regression
 def regression_multi_models(models, Y, method='linear', N_iters=100, raw_features_names=None, reg_params=None,
                             feature_importance=True, confidence_level=0.95, show=True):
@@ -1090,6 +1091,7 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
             for _ in range(N_iters):
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_LD, Y.values, test_size=0.3)  # TODO: do multiple iterations
+                print(y_train.shape, y_test.shape)
                 if m == 'linear':
                     # Linear Regression
                     reg = LinearRegression().fit(X_train, y_train)
@@ -1367,7 +1369,7 @@ def get_test_specific_options(test, BLIND=False):
         'exp2_Angel': ['-1.0', '1.0'],
         'age': None,
         'RL_age': None,
-        'RL_treat_sex': None,
+        'RL_treat_sex': ['ALS_F', 'FI_F', 'FR_F'],
         'RL_treat': None,
         'RL_sex': None
     }
