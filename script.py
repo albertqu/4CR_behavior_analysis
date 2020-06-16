@@ -11,14 +11,14 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.cluster import SpectralClustering
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.svm import SVR, SVC
 from umap.umap_ import UMAP
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, XGBRegressor
 # plotting
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -1053,7 +1053,7 @@ def conn_matrix_hierarchical_sort(mat, labels, affinity='euclidean', method='war
 
 
 # Regression
-def regression_multi_models(models, Y, method='linear', N_iters=100, raw_features_names=None,
+def regression_multi_models(models, Y, method='linear', N_iters=100, raw_features_names=None, reg_params=None,
                             feature_importance=True, confidence_level=0.95, show=True):
     # implement feature importance
     # dataset_name, dataOut
@@ -1064,8 +1064,12 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
         assert raw_features_names is not None
     # TODO: implement method supporting multidim Y
 
+    if reg_params is None:
+        reg_params = {}
+
     if method == 'all':
-        method = ['linear', 'DT', 'SVR_poly', 'SVR_linear', 'SVR_rbf', 'SVR_sigmoid']
+        method = ['linear', 'DT', 'SVR_poly', 'SVR_linear', 'SVR_rbf', 'SVR_sigmoid', 'XGBoost',
+                  'RandomForests']
     elif isinstance(method, str):
         method = [method]
 
@@ -1096,6 +1100,19 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
                 elif re.search(r'SVR_(\w+)', m):
                     kernelType = m.split('_')[1] #['linear', 'poly', 'rbf', 'sigmoid']
                     reg = SVR(C=1, epsilon=0.5, kernel=kernelType).fit(X_train, y_train)
+
+                elif m == 'RandomForests':
+                    defaults = {"n_estimators": 50, "n_jobs": 4}
+                    if 'RandomForests' in reg_params:
+                        defaults.update(reg_params['RandomForests'])
+                    reg = RandomForestRegressor(**defaults).fit(X_train, y_train)
+                elif m == 'XGBoost':
+                    defaults = {"learning_rate": 0.3, "gamma": 0, "reg_lambda": 1,  # minimum loss reduction
+                                "min_child_weight": 1,  # larger, less likely to overfit, more conservative
+                                "max_depth": 6, "n_jobs": 4}
+                    if 'XGBoost' in reg_params:
+                        defaults.update(reg_params['XGBoost'])
+                    reg = XGBRegressor(**defaults).fit(X_train, y_train)
                 else:
                     raise NotImplementedError(f"Unknown Regression Method {m}")
                 composite_reg = reg.score(X_test, y_test)
@@ -1113,7 +1130,6 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
             reg_pdf['label'].append(y_inds_double)
     for rp in reg_pdf:
         reg_pdf[rp] = np.concatenate(reg_pdf[rp])
-        print(rp, reg_pdf[rp].shape)
 
     if show:
         # fig, axes = plt.subplots(nrows=len(method), ncols=len(models), sharey=True, sharex=True)
@@ -1448,6 +1464,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         angel_labels = get_data_label(tPDF, tLabels, 'exp2_Angel', STRIFY=False)
         LABEL = 'Age At Test'
         LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=False)
+        #LDLabels = ((LDLabels // 10) * 10).astype(str)
         # FILTER OUT Treatment Groups
         selectors = (angel_labels.astype(np.float) == -1) & (exp1_labels.astype(np.float) == -1)
         BX_nonan_dm = BX_nonan_dm[selectors]
@@ -1477,7 +1494,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     # Train Classifiers on X_LDs and quantify cross validation area
     if 'age' in test:
         if reg_feature_models is None:
-            reg_FModels =  ['ISOMAP', 'PCA']
+            reg_FModels = [m for m in ['ISOMAP', 'PCA'] if m in models_behaviors]
         else:
             reg_FModels = reg_feature_models
         models4regression = {m: models_behaviors[m] for m in reg_FModels}
