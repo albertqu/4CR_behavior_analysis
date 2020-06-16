@@ -638,8 +638,11 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
             if affinity == 'precomputed':
                 hsort_mat = 1 / (hsort_mat + 1e-12)
                 fig.suptitle("Similarity Matrix Across classes")
-            if confusion_mode is not None:
+            elif confusion_mode is not None:
                 fig.suptitle("Confusion Matrix For Classifiers")
+            else:
+                fig.suptitle("Raw Data Matrix Sorted With Dissimilarity")
+            if confusion_mode is not None:
                 # For confusion matrix, visualize accuracy
                 thresh = hsort_mat.max() / 1.5 if confusion_mode != 'raw' else hsort_mat.max() / 2
                 for i in range(hsort_mat.shape[0]):
@@ -651,8 +654,7 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
                         ax.text(j, i, fm.format(hsort_mat[i, j]),
                                  horizontalalignment="center",
                                  color="white" if hsort_mat[i, j] > thresh else "black")
-            else:
-                fig.suptitle("Raw Data Matrix Sorted With Dissimilarity")
+
             pmp = ax.imshow(hsort_mat, cmap=plt.cm.get_cmap('Blues'))
             ax.hlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
             ax.vlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
