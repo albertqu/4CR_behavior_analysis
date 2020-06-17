@@ -639,11 +639,7 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
             cluster_edges = np.cumsum(ccounts) - 0.5
             if affinity == 'precomputed':
                 hsort_mat = 1 / (hsort_mat + 1e-12)
-                fig.suptitle("Similarity Matrix Across classes")
-            elif confusion_mode is not None:
-                fig.suptitle("Confusion Matrix For Classifiers")
-            else:
-                fig.suptitle("Raw Data Matrix Sorted With Dissimilarity")
+
             if confusion_mode is not None:
                 # For confusion matrix, visualize accuracy
                 thresh = hsort_mat.max() / 1.5 if confusion_mode != 'raw' else hsort_mat.max() / 2
@@ -656,17 +652,30 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
                         ax.text(j, i, fm.format(hsort_mat[i, j]),
                                  horizontalalignment="center",
                                  color="white" if hsort_mat[i, j] > thresh else "black")
-
+                fig.suptitle("Confusion Matrix For Classifiers")
+            elif affinity == 'precomputed':
+                thresh = hsort_mat.max() / 1.5 if confusion_mode != 'raw' else hsort_mat.max() / 2
+                for i in range(hsort_mat.shape[0]):
+                    if confusion_mode != 'raw':
+                        fm = "{:0.2f}"
+                    else:
+                        fm = "{:,}"
+                    ax.text(i, i, fm.format(hsort_mat[i, i]),
+                            horizontalalignment="center",
+                            color="white" if hsort_mat[i, i] > thresh else "black")
+                fig.suptitle("Similarity Matrix Across classes")
+            else:
+                fig.suptitle("Raw Data Matrix Sorted With Dissimilarity")
             pmp = ax.imshow(hsort_mat, cmap=plt.cm.get_cmap('Blues'))
             ax.hlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
             ax.vlines(cluster_edges, -0.5, hsort_mat.shape[0] - 0.5, colors='k')
-            ax.set_title(m + f"_{tag}" if tag is not None else "")
+            ax.set_title(f"{m}_{met}" + f"_{tag}" if tag is not None else "")
             ax.set_xticks(lxs)
             ax.set_xticklabels(hsort_labels, rotation=45, horizontalalignment="right")
             ax.set_ylabel('truth')
             ax.set_yticks(lxs)
             ax.set_yticklabels(hsort_labels)
-            ax.set_ylabel(f'{met} prediction')
+            ax.set_ylabel(f'{met}')
             plt.colorbar(pmp, ax=ax)
 
 
@@ -937,10 +946,13 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
     return clfs, confs
 
 
-def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method='silhouette', metric='euclidean',
-                                   cluster_param=3, label_alias=None, show=True):
+def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method=('silhouette', 'average'),
+                                   metric='euclidean', cluster_param=3, label_alias=None, show=True):
+    # TODO: make method tunable, not necessary so far because silhouette is way better
     mats = {}
     uniqLabels = labels.unique()
+    if isinstance(method, str):
+        method = [method]
     # Plot a score find best score ?
     for m in models:
         if m == 'tSNE':
@@ -952,15 +964,18 @@ def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method='silhouet
             LD_dim = min(LD_dim, X_LD.shape[-1])
         X_LD = X_LD[:, :LD_dim]
         # TODO: fix unique labels
-        mat, ulabels = calculate_class_dissimilarity(X_LD, labels=labels, categories=uniqLabels,
-                                                     method=method, metric=metric)
-        # Get similarity as inverse of dissimilarity
-        mats[m] = {method: mat}
+        mats[m] = {}
+        for met in method:
+            mat, ulabels = calculate_class_dissimilarity(X_LD, labels=labels, categories=uniqLabels,
+                                                         method=met, metric=metric)
+            # Get similarity as inverse of dissimilarity
+            mats[m][met] = mat
+
     # TODO: Handle multiple models
     if len(mats) != 0:
         # TODO: more robust handling of TSNE
         if show:
-            visualize_conn_matrix(mats, uniqLabels, affinity='precomputed', tag=f"{method}_{metric}",
+            visualize_conn_matrix(mats, uniqLabels, affinity='precomputed', tag=f"{metric}_similarity",
                                   cluster_param=cluster_param, label_alias=label_alias)
     return mats
 
