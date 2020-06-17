@@ -618,6 +618,8 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
                 ax = axes
             elif NM == 1:
                 ax = axes[k]
+            elif len(mats) == 1:
+                ax = axes[l]
             else:
                 ax = axes[l][k]
             # modify linkage
