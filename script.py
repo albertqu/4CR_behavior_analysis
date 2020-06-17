@@ -454,7 +454,8 @@ def save_loading_plots(decomp, keywords, model_name, plots):
         plt.close()
 
 
-def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, JNOTEBOOK_MODE=False):
+def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, axis_alias=None,
+                 JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE
     """dims: 0 indexed"""
     # change clustering
@@ -462,8 +463,8 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
     if not hasattr(dims, '__iter__'):
         dims = [dims, dims + 1]
     X_2D = X_HD[:, dims]
-    c0n = f'Comp {dims[0]+1}'
-    c1n = f'Comp {dims[1]+1}'
+    c0n = f'Comp {dims[0]+1}' if axis_alias is None else axis_alias[0]
+    c1n = f'Comp {dims[1]+1}' if axis_alias is None else axis_alias[1]
     titre = f'{tag}_2D_{dims[0]}-{dims[1]}_vis'
     if JNOTEBOOK_MODE:
         nlabels = len(labels.unique())
@@ -514,7 +515,8 @@ def save_LD_plots(X_LD, labels, tag, out, show=True):
         visualize_2D(X_LD, labels, i, tag, show=show, out=outpath)
 
 
-def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, JNOTEBOOK_MODE=False):
+def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
+                 axis_alias=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE  ADD DATASET NAME MAYBE?
     """dims: 0 indexed"""
     # change clustering
@@ -522,9 +524,9 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         dims = np.arange(dims, dims+3)
     assert X_HD.shape[1] >= 3, 'not enough dimensions try 2d instead'
     X_2D = X_HD[:, dims]
-    c0n = f'Comp {dims[0]+1}'
-    c1n = f'Comp {dims[1]+1}'
-    c2n = f'Comp {dims[2]+1}'
+    c0n = f'Comp {dims[0]+1}' if axis_alias is None else axis_alias[0]
+    c1n = f'Comp {dims[1]+1}' if axis_alias is None else axis_alias[1]
+    c2n = f'Comp {dims[2]+1}' if axis_alias is None else axis_alias[2]
     titre = f'{tag}_3D_{dims[0]}-{dims[1]}-{dims[2]}_vis'
 
     if JNOTEBOOK_MODE:
@@ -582,12 +584,12 @@ def visualize_3d_multiple_surface():
 
 
 def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, label_alias=None,
-                             JNOTEBOOK_MODE=False):
+                             axis_alias=None, JNOTEBOOK_MODE=False):
 
     for m in models:
         model, X_LD = models[m]
         vfunc = visualize_3D if min(X_LD.shape[1], ND) == 3 else visualize_2D
-        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias,
+        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias, axis_alias=axis_alias,
               JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
 
@@ -1325,12 +1327,11 @@ def run_procedures():
 ########################################## """
 
 
-def get_test_specific_options(test, BLIND=False):
+def get_test_specific_options(test, BLIND=False, ignore_others=True):
     # Need to change when the total test options changed
     # Color key Experiment 1: (Groups 5-8 are unusually flexible; group 1,6-8 are different strains than 2-5)
-    exp1 = {"-1.0": r"OTHERS",
-            "0.0": r'Controls',
-            "1.0": r"WT/SAL male P60-90 Bl/6J/CR",
+    exp1 = { #"0.0": r'Controls',
+            "1.0": r"Controls WT/SAL male P60-90 Bl/6J/CR",
             "2.0": r"FI male P60 Taconic",
             "3.0": r"FR male P60 Taconic",
             "4.0": r"ALG male P60 Taconic",
@@ -1339,14 +1340,16 @@ def get_test_specific_options(test, BLIND=False):
             "7.0": r"BDNF met/met Ron tested at P60",
             "8.0": r"P26 males WT Bl/6CR"}
     # Color Key Experiment 2 data (focusing on angel's mice and bdnf/trkb manipulations) P40-60 ages
-    exp2 = {"-1.0": r'OTHERS',
-            "1.0": r"Controls VEH/SAL/WT",
+    exp2 = {"1.0": r"Controls VEH/SAL/WT",
             "2.0": r"acute NMPP1pump",
             "3.0": r"chronic NMPP1pump",
             "4.0": r"BDNF Val/Val Ron",
             "5.0": r"P1-23 NMPP1H20",
             "6.0": r"P1-40 NMPP1H20",
             "7.0": r"BDNF Met/Met Ron"}
+    if not ignore_others:
+        exp1["-1.0"] = r"OTHERS"
+        exp2["-1.0"] = r"OTHERS"
 
     exp1_params = {'UMAP': {'n_neighbors': 10,
                               'min_dist': 0.8,
@@ -1365,7 +1368,7 @@ def get_test_specific_options(test, BLIND=False):
     }
 
     IGNORE_LABELS = {
-        'exp1_label_FI_AL_M': ['-1.0', '0.0'],
+        'exp1_label_FI_AL_M': ['-1.0', '0.0', '1.0'],
         'exp2_Angel': ['-1.0', '1.0'],
         'age': None,
         'RL_age': None,
@@ -1389,7 +1392,7 @@ def get_test_specific_options(test, BLIND=False):
 def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', reg_models='linear',
                                clf_models='all', reg_feature_models=None, ND=3, LD_dim=3, NAN_POLICY='drop',
                                BLIND=False, normalize_mode='true', dim_params=None, clf_params=None,
-                               cluster_param=3, show=True, JNOTEBOOK_MODE=True):
+                               cluster_param=3, ignore_others=True, show=True, JNOTEBOOK_MODE=True):
     # TODO: GET RAW MODEL
     """
     :param ROOT:
@@ -1429,7 +1432,8 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         '4CR': FOURCR_data_vectorizer
     }
 
-    test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND)
+    test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND,
+                                                                                ignore_others=ignore_others)
     if dim_params is None:
         dim_params = dim_default_params
 
@@ -1454,13 +1458,25 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     else:
         BXpdf = xPDF
         BX_nonan_dm, BkeywordsX = X_nonan_dm, keywordsX
+    # TODO: add BT_nonan_dm
+
+    if BX_nonan_dm.shape[1] <= 3:
+        axis_alias = BkeywordsX
+    else:
+        axis_alias = None
 
     STRIFY = True
     if test[:3] == 'exp':
         LABEL = test  # 'exp1_label_FI_AL_M', 'exp2_Angel'
           # Set this as true if we want the color of the points to be discrete (for discrete classes of vars)
         LDLabels = get_data_label(tPDF, tLabels, LABEL, STRIFY=STRIFY)
-        BTpdf = tPDF
+        if ignore_others:
+            selectors = LDLabels.astype(np.float) != -1
+            BX_nonan_dm = BX_nonan_dm[selectors]
+            LDLabels = LDLabels[selectors]
+            BTpdf = tPDF[selectors]
+        else:
+            BTpdf = tPDF
     elif test == 'age':
         exp1_labels = get_data_label(tPDF, tLabels, 'exp1_label_FI_AL_M', STRIFY=False)
         angel_labels = get_data_label(tPDF, tLabels, 'exp2_Angel', STRIFY=False)
@@ -1490,7 +1506,8 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
                                                              JNOTEBOOK_MODE=JNOTEBOOK_MODE)
     models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models, params=dim_params)
     visualize_LD_multimodels(models_behaviors, LDLabels, 0, ND=ND, show=show,
-                             label_alias=test_label_alias, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
+                             label_alias=test_label_alias,
+                             axis_alias=axis_alias, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # Quantify Difference
     # Train Classifiers on X_LDs and quantify cross validation area
@@ -1530,9 +1547,10 @@ def main():
     CAT_ENCODE = None
     NAN_POLICY = 'drop'
     CLUSTER_PARAM = 4
-    DIM_MODELS = ['PCA', 'ISOMAP', 'UMAP', 'tSNE']
-    CLF_MODELS = ['QDA'] #, 'SVC', 'RandomForests', 'XGBoost']
-    REG_MODELS = ['linear']
+    IGNORE_OTHERS = True # Change this to show "Others" in clustering plots
+    DIM_MODELS = ['PCA', 'ISOMAP', 'UMAP'] #['PCA', 'ISOMAP', 'UMAP', 'tSNE']
+    CLF_MODELS = ['QDA'] #['QDA', 'SVC', 'RandomForests', 'XGBoost']
+    REG_MODELS = ['linear', 'RandomForests']
     TEST_OPTIONS = ['exp1_label_FI_AL_M', 'exp2_Angel', 'age', 'RL_treat_sex', 'RL_treat', 'RL_sex', 'RL_age']
     BEHAVIOR_OPTS = ['both', 'SD', 'REV']
     if JNOTEBOOK_MODE:
@@ -1555,6 +1573,7 @@ def main():
                                                                           ND=plot_dimension_p, LD_dim=3,
                                                                           NAN_POLICY=NAN_POLICY, BLIND=False,
                                                                           cluster_param=CLUSTER_PARAM,
+                                                                          ignore_others=IGNORE_OTHERS,
                                                                           JNOTEBOOK_MODE=True)
 
     dataset_name = '4CR' # 'MAS'
