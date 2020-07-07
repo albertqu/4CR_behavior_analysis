@@ -223,6 +223,9 @@ def default_vectorizer(pdf, NAN_policy='drop', spec_map=None, finalROW=False):
     and finalRow must be `True`.
     # TODO: when setting data values, use pdf.values[slice, slice] = value
     :param pdf:
+    :param spec_map:
+        cat: for categorical label
+        selF for setting blank label values as -1; selD for deleting blank label values
     :return:
     """
     # NAN_policy: fill additional value (minimum for instance)
@@ -1345,6 +1348,9 @@ def run_procedures():
 
 
 def get_test_specific_options(test, BLIND=False, ignore_others=True):
+    """ Function to use for determining test specific options, currently this is tuned to 4CR dataset;
+    Need to be replaced for specific dataset.
+    """
     # Need to change when the total test options changed
     # Color key Experiment 1: (Groups 5-8 are unusually flexible; group 1,6-8 are different strains than 2-5)
     exp1 = { #"0.0": r'Controls',
@@ -1409,18 +1415,37 @@ def get_test_specific_options(test, BLIND=False, ignore_others=True):
 def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', reg_models='linear',
                                clf_models='all', reg_feature_models=None, ND=3, LD_dim=3, NAN_POLICY='drop',
                                BLIND=False, normalize_mode='true', dim_params=None, clf_params=None,
-                               cluster_param=3, ignore_others=True, show=True, JNOTEBOOK_MODE=True):
+                               cluster_param=4, ignore_others=True, show=True, JNOTEBOOK_MODE=True):
     # TODO: GET RAW MODEL
     """
-    :param ROOT:
-    :param dataRoot:
-    :param behavior:
-    :param dim_models: COULD BE 'all' or A SUBLIST OF ['PCA', 'ICA', 'ISOMAP', 'Kernel_PCA']
-    :param NAN_POLICY:
-    :param JNOTEBOOK_MODE:
+    :param ROOT: This is the root folder
+    :param dataRoot: folder to find behavior data file
+    :param NAN_POLICY: How to handle/encode NAN data
+    :param test: Input to get_test_specific_options function, test option
+    :param BLIND: Flag to indicate whether explicit labels or numerical labels (data blind visualization)
+           show up
+    :param ignore_others: Flag whether NULL group for label encoding (dataset specific)
+    :param show: Switch for visualization
+    :param JNOTEBOOK_MODE: Switch for analysis mode, True if using jupyter notebook like platform
+    :param behavior: tag to distinguish whether to use only REV, SD task data or both
+    :param dim_models: list to specify what dimensionality reduction model to use, 'all' for using all models
+           implemented
+    :param dim_params:
+    :param LD_dim: number of dimensions to use for postprocessing (classification e.g.)
+    :param reg_models: specify what regression model to use, 'all' for using all models
+           implemented
+    :param clf_models: specify what classification model to use, 'all' for using all models
+           implemented
+    :param clf_params: parameters for classification
+    :param reg_feature_models: specify what features to use for regression (by default raw, PCA, ISOMAP,
+    if available)
+    :param ND: number of dimensions to use for visualization (2 or 3)
+    :param normalize_mode: method to normalize confusion matrix for classification
+    :param cluster_param: number of clusters to find in the sorting of confusion matrix
+
     :return:
     """
-    # SPECIFICATION
+    # SPECIFICATION (TODO: DATA SPECIFIC)
     if test.startswith('RL'):
         dataset_name = 'FIP_RL'
     else:
@@ -1435,7 +1460,10 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         os.makedirs(dataOut)
     pdf = load_session(dataRoot, dataset_name)
 
-    # preprocessing
+    # test speciifc option (TODO: DATA Specific)
+    test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND,
+                                                                                    ignore_others=ignore_others)
+    # preprocessing (TODO: DATA SPECIFIC)
     RANGES = {'FIP': 14,  # Behavior only
               'MAS': list(range(6)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
               'MAS2': list(range(8)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
@@ -1449,10 +1477,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         '4CR': FOURCR_data_vectorizer
     }
 
-    test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND,
-                                                                                ignore_others=ignore_others)
-    if dim_params is None:
-        dim_params = dim_default_params
+    # -----------------------------------------
 
     # FEATURE CODING
     # todo: set by slice problem did not show up with step by step run
@@ -1460,7 +1485,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     tLEN, xLEN = tPDF.shape[1], xPDF.shape[1]
     T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
 
-    # DATA SELECTION
+    # DATA SELECTION: (TODO: DATA SPECIFIC)
     feature_classes_X = dataset_split_feature_classes(xPDF)
     if behavior == 'SD':
         SDX = feature_classes_X['SD']
@@ -1519,6 +1544,8 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
         raise NotImplementedError(f'Unknown test: {test}')
 
     # DIM Reduction
+    if dim_params is None:
+        dim_params = dim_default_params
     pca_full, ClusteringDim = dataset_dimensionality_probing(BX_nonan_dm, dataset_name, visualize=show,
                                                              JNOTEBOOK_MODE=JNOTEBOOK_MODE)
     models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models, params=dim_params)
