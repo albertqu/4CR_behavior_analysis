@@ -7,7 +7,7 @@ import pandas as pd
 import sklearn
 from sklearn import cluster, preprocessing
 from sklearn.manifold import Isomap, MDS, TSNE
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, mean_absolute_error, mean_squared_error
 from sklearn.metrics import pairwise_distances
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
@@ -18,11 +18,18 @@ from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.svm import SVR, SVC
 from umap.umap_ import UMAP
-from xgboost import XGBClassifier, XGBRegressor
+try:
+    from xgboost import XGBClassifier, XGBRegressor
+except:
+    print("Warning! XGBoost cannot be loaded!")
 # plotting
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import seaborn as sns
-import plotly.express as px
+try:
+    import plotly.express as px
+except:
+    print("Warning: Plotly cannot be loaded!")
 
 RAND_STATE = 2020
 
@@ -168,7 +175,8 @@ def FOURCR_data_vectorizer(pdf, inputRange, NAN_policy='drop'):
         'exp2_Angel': 'selF',
         'Treat': 'cat',
         'Genotype': 'cat',
-        'Experimenter': 'cat'
+        'Experimenter': 'cat',
+        'ID': 'cat' # Figure out better way to encode this
     }
     # test.weight
     testweight = pdf['test.weight']
@@ -457,12 +465,36 @@ def save_loading_plots(decomp, keywords, model_name, plots):
         plt.close()
 
 
+def visualize_feature_importance(values, names, thres=20, tag=''):
+    feat_imps, feat_imps_stds = values
+    sort_inds = np.argsort(feat_imps)[::-1]
+    if thres is not None and len(feat_imps) > thres:
+        feat_imps_slice = feat_imps[sort_inds[:thres]]
+        feat_imps_stds_slice = feat_imps_stds[sort_inds[:thres]]
+        names_slice = names[sort_inds[:thres]]
+    else:
+        feat_imps_slice, feat_imps_stds_slice = feat_imps[sort_inds], feat_imps_stds[sort_inds]
+        names_slice = names[sort_inds]
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(20, 10))
+    axes[0].hist(feat_imps, weights=np.full_like(feat_imps, 1/len(feat_imps)))
+    axes[0].set_xlabel('feature importance')
+    axes[0].set_ylabel('percent')
+
+    xs = range(len(feat_imps_slice))
+    axes[1].bar(xs, feat_imps_slice, yerr=feat_imps_stds_slice, align="center")
+    axes[1].set(xticks=xs, xlim=[-1, len(xs)])
+    axes[1].set_xticklabels(names_slice, rotation=60)
+    fig.suptitle(tag)
+    #plt.show()
+
+
 def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, axis_alias=None,
-                 JNOTEBOOK_MODE=False):
+                 vis_ignore=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE
     """dims: 0 indexed"""
     # change clustering
-    nlabels = np.unique(labels)
+    if vis_ignore is None:
+        vis_ignore = []
     if not hasattr(dims, '__iter__'):
         dims = [dims, dims + 1]
     X_2D = X_HD[:, dims]
@@ -470,6 +502,7 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
     c1n = f'Comp {dims[1]+1}' if axis_alias is None else axis_alias[1]
     titre = f'{tag}_2D_{dims[0]}-{dims[1]}_vis'
     if JNOTEBOOK_MODE:
+        # NO need to ignore in interactive mode
         nlabels = len(labels.unique())
         # TODO: blend in real labels of treatments
         if labels.dtype == 'object':
@@ -492,21 +525,33 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         if show:
             fig.show()
     else:
-        PALETTE = sns.color_palette("hls", len(nlabels))
-        fig = plt.figure(figsize=(15, 15))
-        for i, l in enumerate(nlabels):
-            plt.scatter(X_2D[labels == l, 0], X_2D[labels == l, 1], color=PALETTE[i], label=l)
-        plt.legend()
-        plt.title(f'{tag} 2D {dims} visualization')
-        plt.xlabel(c0n)
-        plt.ylabel(c1n)
-        if show:
-            plt.show()
-        if out is not None:
-            fname = os.path.join(out, titre)
-            plt.savefig(fname+'.png')
-            plt.savefig(fname+'.eps')
-            plt.close()
+        uniqlabels = np.setdiff1d(np.unique(labels), vis_ignore)
+        nlabels = len(uniqlabels)
+        with plt.style.context('dark_background'):
+            fig = plt.figure(figsize=(15, 15))
+            ax = plt.gca()
+            sns.set_style(style='black')
+            if labels.dtype == 'object':
+                cseq = sns.color_palette('coolwarm', nlabels)
+                for i, l in enumerate(sorted(uniqlabels)):
+                    ax.scatter(X_2D[labels == l, 0], X_2D[labels == l, 1], color=cseq[i], label=l)
+                ax.legend()
+            else:
+                cmap = sns.cubehelix_palette(as_cmap=True)
+                uniqsel = np.isin(labels, uniqlabels)
+                points = ax.scatter(X_2D[uniqsel, 0], X_2D[uniqsel, 1], c=labels[uniqsel], cmap=cmap)
+                fig.colorbar(points)
+            plt.title(f'{tag} 2D {dims} visualization')
+            plt.xlabel(c0n)
+            plt.ylabel(c1n)
+
+            if show:
+                plt.show()
+            if out is not None:
+                fname = os.path.join(out, titre)
+                plt.savefig(fname+'.png')
+                plt.savefig(fname+'.eps')
+                plt.close()
 
 
 def save_LD_plots(X_LD, labels, tag, out, show=True):
@@ -519,14 +564,16 @@ def save_LD_plots(X_LD, labels, tag, out, show=True):
 
 
 def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
-                 axis_alias=None, JNOTEBOOK_MODE=False):
+                 vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE  ADD DATASET NAME MAYBE?
     """dims: 0 indexed"""
+    if vis_ignore is None:
+        vis_ignore = []
     # change clustering
     if not hasattr(dims, '__iter__'):
         dims = np.arange(dims, dims+3)
     assert X_HD.shape[1] >= 3, 'not enough dimensions try 2d instead'
-    X_2D = X_HD[:, dims]
+    X_3D = X_HD[:, dims]
     c0n = f'Comp {dims[0]+1}' if axis_alias is None else axis_alias[0]
     c1n = f'Comp {dims[1]+1}' if axis_alias is None else axis_alias[1]
     c2n = f'Comp {dims[2]+1}' if axis_alias is None else axis_alias[2]
@@ -549,29 +596,41 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
                 cmaps = newCMAPs
         else:
             cmaps = None
-        fig = px.scatter_3d(pd.DataFrame({c0n: X_2D[:, 0], c1n: X_2D[:, 1], c2n: X_2D[:, 2],
+        fig = px.scatter_3d(pd.DataFrame({c0n: X_3D[:, 0], c1n: X_3D[:, 1], c2n: X_3D[:, 2],
                                  labels.name: labels.values}), x=c0n, y=c1n, z=c2n,
                             color=labels.name, color_discrete_map=cmaps, title=titre)
         if show:
             fig.show()
     else:
-        raise NotImplementedError('3D is currently only supported in Jupiter Notebooks')
-        # PALETTE = sns.color_palette("hls", len(nlabels))
-        # fig = plt.figure(figsize=(15, 15))
-        # for i, l in enumerate(nlabels):
-        #     print('label', l)
-        #     plt.scatter(X_2D[labels == l, 0], X_2D[labels == l, 1], color=PALETTE[i], label=l)
-        # plt.legend()
-        # plt.title(f'{tag} 3D {dims} visualization')
-        # plt.xlabel(c0n)
-        # plt.ylabel(c1n)
-        # if show:
-        #     plt.show()
-        # if out is not None:
-        #     fname = os.path.join(out, titre)
-        #     plt.savefig(fname+'.png')
-        #     plt.savefig(fname+'.eps')
-        #     plt.close()
+        uniqlabels = np.setdiff1d(np.unique(labels), vis_ignore)
+        nlabels = len(uniqlabels)
+        with plt.style.context('dark_background'):
+            fig = plt.figure(figsize=(15, 15))
+            ax = fig.add_subplot(111, projection='3d')
+            sns.set_style(style='dark')
+            if labels.dtype == 'object':
+                cseq = sns.color_palette('coolwarm', nlabels).as_hex()
+                for i, l in enumerate(sorted(uniqlabels)):
+                    ax.scatter(X_3D[labels == l, 0], X_3D[labels == l, 1], X_3D[labels == l, 2], s=100,
+                               color=cseq[i], label=l)
+                ax.legend()
+            else:
+                cmap = sns.cubehelix_palette(as_cmap=True)
+                uniqsel = np.isin(labels, uniqlabels)
+                points = ax.scatter(X_3D[uniqsel, 0], X_3D[uniqsel, 1], X_3D[uniqsel, 2], s=100,
+                                    c=labels[uniqsel], cmap=cmap)
+                fig.colorbar(points)
+            plt.title(f'{tag} 3D {dims} visualization')
+            plt.xlabel(c0n)
+            plt.ylabel(c1n)
+
+            if show:
+                plt.show()
+            if out is not None:
+                fname = os.path.join(out, titre)
+                plt.savefig(fname+'.png')
+                plt.savefig(fname+'.eps')
+                plt.close()
 
 
 def visualize_3d_multiple_surface():
@@ -587,17 +646,18 @@ def visualize_3d_multiple_surface():
 
 
 def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, label_alias=None,
-                             axis_alias=None, JNOTEBOOK_MODE=False):
+                             vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
 
     for m in models:
         model, X_LD = models[m]
         vfunc = visualize_3D if min(X_LD.shape[1], ND) == 3 else visualize_2D
-        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias, axis_alias=axis_alias,
+        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias,
+              vis_ignore=vis_ignore, axis_alias=axis_alias,
               JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
 
 def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, cluster_param=3, label_alias=None,
-                          confusion_mode=None):
+                          confusion_mode=None, save=None):
     """
     cite: https://www.kaggle.com/grfiv4/plot-a-confusion-matrix
     :param mats:
@@ -682,6 +742,8 @@ def visualize_conn_matrix(mats, uniqLabels, affinity='euclidean', tag=None, clus
             ax.set_yticklabels(hsort_labels)
             ax.set_ylabel(f'{met}')
             plt.colorbar(pmp, ax=ax)
+    if save is not None:
+        fig.savefig(os.path.join(save, f"{tag}_conn_matrix.eps"))
 
 
 def visualize_F_measure_multi_clf(mats, uniqLabels, label_alias=None):
@@ -878,7 +940,7 @@ def dim_reduction(X_nonan_dm, ClusteringDim, models='all', params=None):
 
 def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='true',
                               ignore_labels=None, clf_models='all', clf_params=None,
-                              cluster_param=3, label_alias=None, show=True):
+                              cluster_param=3, label_alias=None, show=True, save=None):
     # default return raw confusion matrix and visualize normalized by true labels
     if clf_models == 'all':
         clf_models = ['QDA', 'SVC', 'RandomForests', 'XGBoost'] # XGBoost
@@ -891,7 +953,6 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
     if ignore_labels is None:
         ignore_labels = []
     uniqLabels = np.setdiff1d(labels.unique(), ignore_labels)
-    scores = 0
     # Plot a score find best score ?
     for m in models:
         model, X_LD = models[m]
@@ -899,7 +960,6 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
             LD_dim = X_LD.shape[-1]
         X_LD = X_LD[:, :LD_dim]
         # TODO: add stratified k fold later
-        confmats = np.zeros((len(uniqLabels), len(uniqLabels)))
         neg_selectors = labels.isin(uniqLabels)
         X_LDF, labelsF = X_LD[neg_selectors], labels[neg_selectors]
         # TODO: Generalize to models other than QDA
@@ -929,33 +989,47 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
             else:
                 raise NotImplementedError(f"Unknown Classifier {cm}")
 
+            feat_sum, feat_square = 0, 0
+            confmats = np.zeros((len(uniqLabels), len(uniqLabels)))
             for i in range(N_iters):  # TODO: replace with shuffle splits
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_LDF, labelsF, test_size=0.3, shuffle=True, stratify=labelsF)
                 # QDA
                 clfF.fit(X_train, y_train)
-                score = clfF.score(X_test, y_test)
                 preds = clfF.predict(X_test)
                 conf_mat = confusion_matrix(y_test, preds, labels=uniqLabels)
                 confmats += conf_mat
-                scores += score
+                if hasattr(clfF, 'feature_importances_'):
+                    feat_imp = clfF.feature_importances_
+                    feat_sum += feat_imp
+                    feat_square += np.square(feat_imp)
+            # TODO: maybe add confidence interval for confmats later
             confs[m][cm] = confmats / N_iters
             clfF.fit(X_LDF, labelsF)
-            clfs[m][cm] = (clfF, scores / N_iters) # get clf for all data
+            res = {'model': clfF}
+            if isinstance(feat_sum, np.ndarray) and isinstance(feat_square, np.ndarray):
+                mfs = feat_sum / N_iters
+                sfs = feat_square / N_iters - mfs ** 2
+                res["f_importance"] = (mfs, sfs)
+            clfs[m][cm] = res # get clf for all data
     # TODO: Handle multiple models
     if show:
         visualize_conn_matrix(confs, uniqLabels, tag=f"normalize_{mode}", cluster_param=cluster_param,
-                              confusion_mode=mode, label_alias=label_alias)
+                              confusion_mode=mode, label_alias=label_alias, save=save)
         visualize_F_measure_multi_clf(confs, uniqLabels, label_alias=label_alias)
     # TODO: return the labels
     return clfs, confs
 
 
 def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method=('silhouette', 'average'),
-                                   metric='euclidean', cluster_param=3, label_alias=None, show=True):
+                                   metric='euclidean', cluster_param=3, label_alias=None, ignore_labels=None,
+                                   show=True, save=None):
     # TODO: make method tunable, not necessary so far because silhouette is way better
     mats = {}
-    uniqLabels = labels.unique()
+    if ignore_labels is None:
+        ignore_labels = []
+    uniqLabels = np.setdiff1d(labels.unique(), ignore_labels)
+    #uniqLabels = labels.unique()
     if isinstance(method, str):
         method = [method]
     # Plot a score find best score ?
@@ -981,7 +1055,7 @@ def diff_evaluation_LD_multimodels(models, labels, LD_dim=None, method=('silhoue
         # TODO: more robust handling of TSNE
         if show:
             visualize_conn_matrix(mats, uniqLabels, affinity='precomputed', tag=f"{metric}_similarity",
-                                  cluster_param=cluster_param, label_alias=label_alias)
+                                  cluster_param=cluster_param, label_alias=label_alias, save=save)
     return mats
 
 
@@ -1074,13 +1148,13 @@ def conn_matrix_hierarchical_sort(mat, labels, affinity='euclidean', method='war
     return mat_sorted, labels[neworder], aggs
 
 
-
 # Regression
 def regression_multi_models(models, Y, method='linear', N_iters=100, raw_features_names=None, reg_params=None,
                             feature_importance=True, confidence_level=0.95, show=True):
     # implement feature importance
     # dataset_name, dataOut
     # TODO: different dim models for regression
+    metrics = ['R2', 'MAEp', 'MSEp']
     if len(Y.shape) == 1:
         Y = pd.DataFrame({Y.name: Y})
     if 'raw' in models:
@@ -1102,18 +1176,21 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
     reg_results = {}
     y_inds = Y.columns
     y_inds_double = np.tile(y_inds, 2)
-    reg_pdf = {'model': [], 'method': [], 'score_type': [], 'label': [], 'accuracy': []}
+    reg_pdf = {'model': [], 'method': [], 'score_type': [], 'label': []}
+    reg_pdf.update({imet: [] for imet in metrics})
     D_feats = len(y_inds)
 
     for k in models:
         reg_results[k] = {}
         for m in method:
             model, X_LD = models[k]
-            total_train_accus, total_test_accus = 0., 0.
+            reg_results[k][m] = {f'train_{imet}': 0. for imet in metrics}
+            reg_results[k][m].update({f'test_{imet}': 0. for imet in metrics})
+            feat_sum, feat_square = 0., 0.
             for _ in range(N_iters):
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_LD, Y.values, test_size=0.3)  # TODO: do multiple iterations
-                print(y_train.shape, y_test.shape)
+                #print(y_train.shape, y_test.shape)
                 if m == 'linear':
                     # Linear Regression
                     reg = LinearRegression().fit(X_train, y_train)
@@ -1139,18 +1216,29 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
                     reg = XGBRegressor(**defaults).fit(X_train, y_train)
                 else:
                     raise NotImplementedError(f"Unknown Regression Method {m}")
-                composite_reg = reg.score(X_test, y_test)
-                train_accus, test_accus = test_model_efficacy(reg, X_train, y_train, X_test, y_test)
-                total_train_accus += train_accus
-                total_test_accus += test_accus
-            total_test_accus /= N_iters
-            total_train_accus /= N_iters
-            reg_results[k][m] = {'train_accuracy': total_train_accus,
-                                 'test_accuracy': total_test_accus}
+                if feature_importance and hasattr(reg, 'feature_importances_'):
+                    feat_imp = reg.feature_importances_
+                    feat_sum += feat_imp
+                    feat_square += np.square(feat_imp)
+                for imet in metrics:
+                    mtrains, mtests = test_regression_score(reg, X_train, y_train, X_test, y_test, imet)
+                    reg_results[k][m][f"train_{imet}"] += mtrains
+                    reg_results[k][m][f"test_{imet}"] += mtests
+            if isinstance(feat_sum, np.ndarray) and isinstance(feat_square, np.ndarray):
+                feat_mean = feat_sum / N_iters
+                feat_std = np.sqrt(feat_square / N_iters - feat_mean ** 2)
+                reg_results[k][m]['f_importance'] = (feat_mean, feat_std)
+
+            for imet in metrics:
+                itrain = reg_results[k][m][f"train_{imet}"]
+                itest = reg_results[k][m][f"test_{imet}"]
+                reg_results[k][m][f"train_{imet}"] = itrain / N_iters
+                reg_results[k][m][f"test_{imet}"] = itest / N_iters
+                reg_pdf[imet].append(np.concatenate((itrain, itest)))
+            # TODO: save regression models
             reg_pdf['model'].append([k] * 2 * D_feats)
             reg_pdf['method'].append([m] * 2 * D_feats)
             reg_pdf['score_type'].append(['train'] * D_feats + ['test'] * D_feats)
-            reg_pdf['accuracy'].append(np.concatenate((total_train_accus, total_test_accus)))
             reg_pdf['label'].append(y_inds_double)
     for rp in reg_pdf:
         reg_pdf[rp] = np.concatenate(reg_pdf[rp])
@@ -1159,22 +1247,16 @@ def regression_multi_models(models, Y, method='linear', N_iters=100, raw_feature
         # fig, axes = plt.subplots(nrows=len(method), ncols=len(models), sharey=True, sharex=True)
         # for i, met in enumerate(method):
         #     for j, mod in enumerate(models):
-
-        fig = px.bar(reg_pdf, x="label", y="accuracy", color="score_type", barmode="group",
-                     facet_row="method", facet_col="model")
-        fig.show()
+        for imet in metrics:
+            fig = px.bar(reg_pdf, x="label", y=imet, color="score_type", barmode="group",
+                         facet_row="method", facet_col="model")
+            fig.show()
     return reg_results
-
-
-def visualize_feature_importance():
-    plt.bar(np.arange(len(keywordsT)), regressor.feature_importances_)
-    plt.xticks(np.arange(len(keywordsT)), keywordsT, rotation=90)
-    plt.subplots_adjust(left=0.3, right=0.7, top=0.99, bottom=0.35)
-    plt.show()
 
 
 def regression_with_norm_input(tPDF, xPDF, dataset_name, dataOut, method='linear', feature_importance=True):
     # TODO: use grid search to build a great regression model
+    # Deprecated
     T_nonan_dm, keywordsT, X_nonan_dm, keywordsX = feature_preprocess(tPDF, xPDF)
     X_train, X_test, y_train, y_test = train_test_split(
         T_nonan_dm, X_nonan_dm, test_size=0.3) # TODO: do multiple iterations
@@ -1218,12 +1300,28 @@ def regression_with_norm_input(tPDF, xPDF, dataset_name, dataOut, method='linear
 def test_model_efficacy(model, X_train, y_train, X_test, y_test):
     train_accus, test_accus = np.empty(y_train.shape[1]), np.empty(y_train.shape[1])
     for i in range(y_train.shape[1]):
-        model.fit(X_train, y_train[:, i])
+        # model.fit(X_train, y_train[:, i])
         train_accu = model.score(X_train, y_train[:, i])
         test_accu = model.score(X_test, y_test[:,i])
         train_accus[i] = train_accu
         test_accus[i] = test_accu
     return train_accus, test_accus
+
+
+def test_regression_score(reg, X_train, y_train, X_test, y_test, method='MAEp'):
+    if method == 'MAEp':
+        devs = y_train - np.mean(y_train, keepdims=True, axis=0)
+        trains = mean_absolute_error(y_train, reg.predict(X_train)) / np.mean(np.abs(devs), axis=0)
+        tests = mean_absolute_error(y_test, reg.predict(X_test)) / np.mean(np.abs(devs), axis=0)
+    elif method == 'MSEp':
+        devs = y_train - np.mean(y_train, keepdims=True, axis=0)
+        trains = mean_squared_error(y_train, reg.predict(X_train)) / np.mean(np.square(devs), axis=0)
+        tests = mean_squared_error(y_test, reg.predict(X_test)) / np.mean(np.square(devs), axis=0)
+    elif method == 'R2':
+        trains, tests = test_model_efficacy(reg, X_train, y_train, X_test, y_test)
+    else:
+        raise NotImplementedError(f"Unknown Method {method}")
+    return trains, tests
 
 
 def adjusted_BAC_confusion_matrix(conf):
@@ -1241,7 +1339,7 @@ def class_wise_F_measure(conf):
 
 # Model Selection
 def get_accu(models_behaviors, LDLabels, test_p, CLUSTER_PARAM=4, LDDIM=3):
-    _, ignores = get_test_specific_options(test_p, BLIND=False)
+    _, ignores, _ = get_test_specific_options(test_p, BLIND=False)
     clfs, confs = classifier_LD_multimodels(models_behaviors, LDLabels, LD_dim=LDDIM, mode='true',
                                             ignore_labels=ignores, cluster_param=CLUSTER_PARAM,
                                             show=False)  # ['1.0', '0.0', '-1.0']
@@ -1347,7 +1445,7 @@ def run_procedures():
 ########################################## """
 
 
-def get_test_specific_options(test, BLIND=False, ignore_others=True):
+def get_test_specific_options(test, BLIND=False, ignore_others=True, ignore_labels=None):
     """ Function to use for determining test specific options, currently this is tuned to 4CR dataset;
     Need to be replaced for specific dataset.
     """
@@ -1391,7 +1489,7 @@ def get_test_specific_options(test, BLIND=False, ignore_others=True):
     }
 
     IGNORE_LABELS = {
-        'exp1_label_FI_AL_M': ['-1.0', '0.0', '1.0'],
+        'exp1_label_FI_AL_M': ['-1.0', '0.0', '1.0', '3.0', '4.0', '6.0', '7.0'],
         'exp2_Angel': ['-1.0', '1.0'],
         'age': None,
         'RL_age': None,
@@ -1409,13 +1507,16 @@ def get_test_specific_options(test, BLIND=False, ignore_others=True):
         'RL_treat': {},
         'RL_sex': {}
     }
-    return TEST_LABEL_ALIAS[test], IGNORE_LABELS[test], DIM_PARAMS[test]
+
+    return TEST_LABEL_ALIAS[test], IGNORE_LABELS[test] if ignore_labels is None else ignore_labels,\
+           DIM_PARAMS[test]
 
 
 def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models='all', reg_models='linear',
                                clf_models='all', reg_feature_models=None, ND=3, LD_dim=3, NAN_POLICY='drop',
                                BLIND=False, normalize_mode='true', dim_params=None, clf_params=None,
-                               cluster_param=4, ignore_others=True, show=True, JNOTEBOOK_MODE=True):
+                               cluster_param=4, ignore_others=True, vis_ignore=None, show=True, save=True,
+                               JNOTEBOOK_MODE=True):
     # TODO: GET RAW MODEL
     """
     :param ROOT: This is the root folder
@@ -1451,7 +1552,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
     else:
         dataset_name = '4CR'  # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
-    plots = os.path.join(ROOT, 'plots', dataset_name)
+    plots = os.path.join(ROOT, 'plots', dataset_name, test)
 
     if not os.path.exists(plots):
         os.makedirs(plots)
@@ -1462,7 +1563,8 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
 
     # test speciifc option (TODO: DATA Specific)
     test_label_alias, ignore_labels, dim_default_params = get_test_specific_options(test, BLIND=BLIND,
-                                                                                    ignore_others=ignore_others)
+                                                                                    ignore_others=ignore_others,
+                                                                                    ignore_labels=vis_ignore)
     # preprocessing (TODO: DATA SPECIFIC)
     RANGES = {'FIP': 14,  # Behavior only
               'MAS': list(range(6)) + list(range(pdf.shape[1] - 8, pdf.shape[1])),
@@ -1550,7 +1652,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
                                                              JNOTEBOOK_MODE=JNOTEBOOK_MODE)
     models_behaviors = dim_reduction(BX_nonan_dm, ClusteringDim, models=dim_models, params=dim_params)
     visualize_LD_multimodels(models_behaviors, LDLabels, 0, ND=ND, show=show,
-                             label_alias=test_label_alias,
+                             label_alias=test_label_alias, vis_ignore=ignore_labels,
                              axis_alias=axis_alias, JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
     # Quantify Difference
@@ -1572,9 +1674,11 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
                                                 mode=normalize_mode, ignore_labels=ignore_labels,
                                                 clf_models=clf_models, clf_params=clf_params,
                                                 cluster_param=cluster_param, label_alias=test_label_alias,
-                                                show=show)
-        dissim_mats = diff_evaluation_LD_multimodels(models_behaviors, LDLabels, cluster_param=cluster_param,
-                                       label_alias=test_label_alias, show=show)
+                                                show=show, save=plots if save else None)
+        dissim_mats = diff_evaluation_LD_multimodels(models_behaviors, LDLabels, ignore_labels=ignore_labels,
+                                                     cluster_param=cluster_param,
+                                                     label_alias=test_label_alias, show=show,
+                                                     save=plots if save else None)
 
     return models_behaviors, LDLabels, BXpdf, BTpdf # TODO: Returns tLabels also depending on utility
 
@@ -1603,7 +1707,7 @@ def main():
         ROOT = "/Users/albertqu/Documents/7.Research/Wilbrecht_Lab/PCA_adversity/"
     dataRoot = os.path.join(ROOT, 'data')
 
-    test_p, behavior_p, plot_dimension_p = 'exp2_Angel', 'both', 3
+    test_p, behavior_p, plot_dimension_p = 'exp1_label_FI_AL_M', 'both', 3
     dim_params = {'UMAP': {'n_neighbors': 10,
                               'min_dist': 0.8,
                               'n_components': 3,
@@ -1622,7 +1726,7 @@ def main():
 
     dataset_name = '4CR' # 'MAS'
     dataOut = os.path.join(dataRoot, dataset_name)
-    plots = os.path.join(ROOT, 'plots', dataset_name)
+    plots = os.path.join(ROOT, 'plots', dataset_name, test_p)
 
     if not os.path.exists(plots):
         os.makedirs(plots)
