@@ -488,8 +488,8 @@ def visualize_feature_importance(values, names, thres=20, tag=''):
     #plt.show()
 
 
-def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, axis_alias=None,
-                 vis_ignore=None, JNOTEBOOK_MODE=False):
+def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None, colormap=None,
+                 axis_alias=None, vis_ignore=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE
     """dims: 0 indexed"""
     # change clustering
@@ -507,7 +507,10 @@ def visualize_2D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         # TODO: blend in real labels of treatments
         if labels.dtype == 'object':
             cseq = sns.color_palette("coolwarm", nlabels).as_hex()
-            cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            if colormap is None:
+                cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            else:
+                cmaps = colormap
             if label_alias is not None:
                 newLabels = labels.copy(deep=True)
                 newCMAPs = {}
@@ -564,7 +567,7 @@ def save_LD_plots(X_LD, labels, tag, out, show=True):
 
 
 def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
-                 vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
+                 colormap=None, vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
     # TODO: implement saving for JNOTEBOOK_MODE  ADD DATASET NAME MAYBE?
     """dims: 0 indexed"""
     if vis_ignore is None:
@@ -584,7 +587,10 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         # TODO: blend in real labels of treatments
         if labels.dtype == 'object':
             cseq = sns.color_palette("coolwarm", nlabels).as_hex()
-            cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            if colormap is None:
+                cmaps = {ic: cseq[i] for i, ic in enumerate(sorted(labels.unique()))}
+            else:
+                cmaps = colormap
             if label_alias is not None:
                 newLabels = labels.copy(deep=True)
                 newCMAPs = {}
@@ -646,12 +652,12 @@ def visualize_3d_multiple_surface():
 
 
 def visualize_LD_multimodels(models, labels, dims, ND=3, show=True, out=None, label_alias=None,
-                             vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
+                             colormap=None, vis_ignore=None, axis_alias=None, JNOTEBOOK_MODE=False):
 
     for m in models:
         model, X_LD = models[m]
         vfunc = visualize_3D if min(X_LD.shape[1], ND) == 3 else visualize_2D
-        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias,
+        vfunc(X_LD, labels, dims, m, show=show, out=out, label_alias=label_alias, colormap=colormap,
               vis_ignore=vis_ignore, axis_alias=axis_alias,
               JNOTEBOOK_MODE=JNOTEBOOK_MODE)
 
@@ -1681,6 +1687,7 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
                                                      save=plots if save else None)
 
     return models_behaviors, LDLabels, BXpdf, BTpdf # TODO: Returns tLabels also depending on utility
+
 
 
 """ ##########################################
