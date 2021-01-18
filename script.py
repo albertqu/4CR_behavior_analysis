@@ -605,6 +605,7 @@ def visualize_3D(X_HD, labels, dims, tag, show=True, out=None, label_alias=None,
         fig = px.scatter_3d(pd.DataFrame({c0n: X_3D[:, 0], c1n: X_3D[:, 1], c2n: X_3D[:, 2],
                                  labels.name: labels.values}), x=c0n, y=c1n, z=c2n,
                             color=labels.name, color_discrete_map=cmaps, title=titre)
+        fig.update_layout(font_family='arial')
         if show:
             fig.show()
     else:
@@ -1024,6 +1025,10 @@ def classifier_LD_multimodels(models, labels, LD_dim=None, N_iters=100, mode='tr
                               confusion_mode=mode, label_alias=label_alias, save=save)
         visualize_F_measure_multi_clf(confs, uniqLabels, label_alias=label_alias)
     # TODO: return the labels
+    if label_alias is not None:
+        confs['label'] = [label_alias[hl] for hl in uniqLabels]
+    else:
+        confs['label'] = uniqLabels
     return clfs, confs
 
 
@@ -1688,6 +1693,54 @@ def behavior_analysis_pipeline(ROOT, dataRoot, test, behavior='both', dim_models
 
     return models_behaviors, LDLabels, BXpdf, BTpdf # TODO: Returns tLabels also depending on utility
 
+
+def procedure_robust_test(allXpdf, alltLabel, n_samples=20, cluster_param=2, colormap=None, runN=None):
+    # Apply procedure to sub dataset
+    # 1. identify the step of <data -> procedure -> dim reduction and replace with sub data>
+    def strat_subsample(alltLabel, allXpdf, n_samples):
+        allesX = []
+        allesT = []
+        for lb in alltLabel.unique():
+            sel = alltLabel == lb
+            nn = np.sum(sel)
+            assert n_samples <= nn, f'not enough samples for {lb}'
+            nsubs = np.random.choice(nn, n_samples, replace=False)
+            xslice = allXpdf[sel].reset_index().iloc[nsubs]
+            tslice = alltLabel[sel].reset_index().iloc[nsubs]
+            allesX.append(xslice)
+            allesT.append(tslice)
+        X_pdf, tLabels = pd.concat(allesX, axis=0, ignore_index=True), \
+                        pd.concat(allesT, axis=0, ignore_index=True)[alltLabel.name]
+        return X_pdf, tLabels
+    dim_models = ['PCA', 'ISOMAP', 'UMAP']
+    dim_params = None
+    if n_samples is None:
+        X_pdf, tLabels = allXpdf, alltLabel
+    else:
+        X_pdf, tLabels = strat_subsample(alltLabel, allXpdf, n_samples)
+    pca_full, ClusteringDim = dataset_dimensionality_probing(X_pdf.values, '4CR', visualize=True,
+                                                             JNOTEBOOK_MODE=True)
+    models_behaviors = dim_reduction(X_pdf.values, ClusteringDim, models=dim_models, params=dim_params)
+    visualize_LD_multimodels(models_behaviors, tLabels, 0, ND=3, colormap=colormap, show=True, JNOTEBOOK_MODE=True)
+    clfs, confs = classifier_LD_multimodels(models_behaviors, tLabels, LD_dim=3, cluster_param=cluster_param,
+                                            mode='true', clf_models=['QDA'],
+                                            show=True)
+    allabels = confs['label']
+    if runN is not None:
+        allTPS = []
+        for _ in range(runN):
+            X_pdf, tLabels = strat_subsample(alltLabel, allXpdf, n_samples)
+            models_behaviors = dim_reduction(X_pdf.values, ClusteringDim, models=['UMAP'],
+                                             params=dim_params)
+            clfs, confs = classifier_LD_multimodels(models_behaviors, tLabels, LD_dim=3,
+                                                    cluster_param=cluster_param,
+                                                    mode='true', clf_models=['QDA'],
+                                            show=False)
+            tps = np.diag(confs['UMAP']['QDA']) / np.sum(confs['UMAP']['QDA'], axis=1)
+            allTPS.append(tps)
+        temp = pd.DataFrame(np.vstack(allTPS), columns=allabels)
+        temp['accuracy'] = np.mean(allTPS, axis=1)
+        return temp
 
 
 """ ##########################################
